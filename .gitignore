@@ -1,0 +1,13 @@
+# .NET build output
+bin/
+obj/
+
+# Runtime config gerado ao lado do exe
+config.txt
+
+# IDE / VS
+.vs/
+*.user
+
+# Logs locais
+*.log
