@@ -7,6 +7,18 @@ um botão **"Compartilhar música"** que manda o áudio do PC junto com a voz.
 Roda **nos dois PCs** (na mesma rede de casa) e **se descobre + conecta sozinho** — não
 precisa digitar IP, porta nem escolher microfone.
 
+## Recursos
+
+- **Voz P2P** na LAN, privada (o Discord nunca ouve).
+- **Auto-conexão**: acha o par na rede e conecta sozinho; salva como "amigo" e reconecta rápido.
+- **Supressão de ruído** no microfone (SpeexDSP), ligada por padrão.
+- **Chat** com histórico + **ping** (widget pisca e toca um sininho no outro lado).
+- **Widget flutuante** minúsculo, sempre por cima, pra pingar/abrir o chat sem sair do jogo.
+- **Enviar arquivos grandes (5 GB+)** direto pela rede local, com progresso e verificação.
+- **Botão Atualizar**: baixa e instala a versão nova sozinho (Velopack).
+- **Compartilhar música**: manda o som do seu PC pro par (exclui o próprio DuoVoz, pra não
+  criar eco).
+
 ---
 
 ## Instalar (recomendado — sem complicação)

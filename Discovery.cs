@@ -47,8 +47,42 @@ public sealed class Config
     public int RemotePort = 50777;
     public bool AutoConnect = true; // novo campo (default true)
 
+    // Fase 2
+    public Guid MachineId = Guid.Empty;   // identidade persistente desta maquina
+    public Guid FriendId = Guid.Empty;    // amigo salvo (machineId do par)
+    public string FriendName = "";
+    public string FriendLastIp = "";
+    public int FriendPort = 50777;
+    public bool NoiseSuppress = true;
+    public bool ShowWidget = true;
+    public int WidgetX = -1;
+    public int WidgetY = -1;
+    public bool AllowLocalPeers = false;  // 1 = permite 2 instancias locais (teste)
+
+    // Em %APPDATA%\DuoVoz: a pasta do exe muda a cada update do Velopack e o
+    // config ao lado do exe era PERDIDO na atualizacao.
     private static string PathFile()
+    {
+        string dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "DuoVoz");
+        try { Directory.CreateDirectory(dir); } catch { }
+        return Path.Combine(dir, "config.txt");
+    }
+
+    private static string OldPathFile()
         => Path.Combine(AppContext.BaseDirectory, "config.txt");
+
+    /// <summary>
+    /// Gera o MachineId persistente se ainda nao existir e persiste UMA vez. Dono unico:
+    /// chamado so pelo MainForm (nao pelo bootConfig antes do mutex), p/ evitar que uma
+    /// 2a instancia bloqueada â€” ou um Load com config parcial â€” reescreva o arquivo e
+    /// perca o registro do amigo. Idempotente: no-op se ja houver id.
+    /// </summary>
+    public void EnsureMachineId()
+    {
+        if (MachineId != Guid.Empty) return;
+        MachineId = Guid.NewGuid();
+        Save();
+    }
 
     public static Config Load()
     {
@@ -56,6 +90,15 @@ public sealed class Config
         try
         {
             string p = PathFile();
+            // Migracao unica: config antigo ao lado do exe -> %APPDATA%\DuoVoz.
+            if (!File.Exists(p))
+            {
+                string old = OldPathFile();
+                if (File.Exists(old))
+                {
+                    try { File.Copy(old, p); Log.Write("config migrado p/ AppData"); } catch { }
+                }
+            }
             if (!File.Exists(p)) return c;
             foreach (string raw in File.ReadAllLines(p))
             {
@@ -71,11 +114,24 @@ public sealed class Config
                     case "localport": if (int.TryParse(v, out var lp)) c.LocalPort = lp; break;
                     case "remoteport": if (int.TryParse(v, out var rp)) c.RemotePort = rp; break;
                     case "autoconnect": c.AutoConnect = v == "1" || v.Equals("true", StringComparison.OrdinalIgnoreCase); break;
+                    case "machineid": if (Guid.TryParse(v, out var mid)) c.MachineId = mid; break;
+                    case "friendid": if (Guid.TryParse(v, out var fid)) c.FriendId = fid; break;
+                    case "friendname": c.FriendName = v; break;
+                    case "friendlastip": c.FriendLastIp = v; break;
+                    case "friendport": if (int.TryParse(v, out var fpt)) c.FriendPort = fpt; break;
+                    case "noisesuppress": c.NoiseSuppress = v == "1" || v.Equals("true", StringComparison.OrdinalIgnoreCase); break;
+                    case "showwidget": c.ShowWidget = v == "1" || v.Equals("true", StringComparison.OrdinalIgnoreCase); break;
+                    case "widgetx": if (int.TryParse(v, out var wx)) c.WidgetX = wx; break;
+                    case "widgety": if (int.TryParse(v, out var wy)) c.WidgetY = wy; break;
+                    case "allowlocalpeers": c.AllowLocalPeers = v == "1" || v.Equals("true", StringComparison.OrdinalIgnoreCase); break;
                     // chaves desconhecidas (formato antigo): ignoradas -> backward-compat
                 }
             }
         }
         catch (Exception ex) { Log.Write("Config.Load falhou: " + ex.Message); }
+        // NAO gera/persiste MachineId aqui: Load nunca escreve (senao um Load com config
+        // parcial ou uma 2a instancia bloqueada poderia reescrever e perder o amigo).
+        // A geracao unica fica em EnsureMachineId(), chamada so pelo MainForm.
         return c;
     }
 
@@ -89,7 +145,23 @@ public sealed class Config
             sb.AppendLine($"localport={LocalPort}");
             sb.AppendLine($"remoteport={RemotePort}");
             sb.AppendLine($"autoconnect={(AutoConnect ? "1" : "0")}");
-            File.WriteAllText(PathFile(), sb.ToString());
+            sb.AppendLine($"machineid={MachineId}");
+            sb.AppendLine($"friendid={FriendId}");
+            sb.AppendLine($"friendname={FriendName}");
+            sb.AppendLine($"friendlastip={FriendLastIp}");
+            sb.AppendLine($"friendport={FriendPort}");
+            sb.AppendLine($"noisesuppress={(NoiseSuppress ? "1" : "0")}");
+            sb.AppendLine($"showwidget={(ShowWidget ? "1" : "0")}");
+            sb.AppendLine($"widgetx={WidgetX}");
+            sb.AppendLine($"widgety={WidgetY}");
+            sb.AppendLine($"allowlocalpeers={(AllowLocalPeers ? "1" : "0")}");
+            // Escrita atomica: grava num .tmp e troca (File.Replace/Move) p/ nunca
+            // truncar o config real se o processo morrer no meio da escrita.
+            string path = PathFile();
+            string tmp = path + ".tmp";
+            File.WriteAllText(tmp, sb.ToString());
+            if (File.Exists(path)) File.Replace(tmp, path, null);
+            else File.Move(tmp, path);
         }
         catch (Exception ex) { Log.Write("Config.Save falhou: " + ex.Message); }
     }
@@ -114,7 +186,8 @@ public sealed class Config
 public sealed class DiscoveryService : IDisposable
 {
     public const int DiscoveryPort = 50779;
-    private static readonly byte[] Magic = Encoding.ASCII.GetBytes("DUOVOZ1"); // 7 bytes
+    private static readonly byte[] Magic = Encoding.ASCII.GetBytes("DUOVOZ1");  // 7 bytes (v1, sem machineId)
+    private static readonly byte[] Magic2 = Encoding.ASCII.GetBytes("DUOVOZ2"); // 7 bytes (v2: + machineId antes do nome)
 
     // Re-emite PeerDiscovered se o mesmo (ip,port) nao for visto ha mais de este TTL,
     // mesmo sem mudanca de ip/porta -- recuperacao extra alem do ForgetPeers().
@@ -123,6 +196,7 @@ public sealed class DiscoveryService : IDisposable
     private readonly Guid _instanceId;
     private readonly ushort _voicePort;
     private readonly byte[] _nameBytes;
+    private readonly Guid _machineId; // identidade PERSISTENTE da maquina (config)
 
     private Socket? _listen;     // bound 0.0.0.0:50779, recebe beacons
     private Socket? _send;       // socket de envio com broadcast habilitado
@@ -135,14 +209,16 @@ public sealed class DiscoveryService : IDisposable
     // Debounce: ultimo (ip,port) visto por instanceId remoto.
     private readonly Dictionary<Guid, (IPAddress ip, ushort port, DateTime last)> _seen = new();
 
-    /// <summary>Disparado quando um beacon de par chega (1a vez, ip/porta muda, ou apos TTL).</summary>
-    public event Action<IPAddress, ushort, string>? PeerDiscovered;
+    /// <summary>Disparado quando um beacon de par chega (1a vez, ip/porta muda, ou apos TTL).
+    /// O Guid final e o machineId persistente do remoto (Guid.Empty em beacon v1 antigo).</summary>
+    public event Action<IPAddress, ushort, string, Guid>? PeerDiscovered;
 
-    public DiscoveryService(Guid instanceId, ushort voicePort, string displayName)
+    public DiscoveryService(Guid instanceId, ushort voicePort, string displayName, Guid machineId)
     {
         _instanceId = instanceId;
         _voicePort = voicePort;
         _nameBytes = Encoding.UTF8.GetBytes(displayName ?? string.Empty);
+        _machineId = machineId;
     }
 
     public void Start()
@@ -196,13 +272,15 @@ public sealed class DiscoveryService : IDisposable
         var snd = _send;
         if (snd == null || !_running) return;
 
-        // Payload: magic(7) + instanceId(16) + voicePort(2 LE) + utf8 name.
-        byte[] payload = new byte[Magic.Length + 16 + 2 + _nameBytes.Length];
+        // Payload v2: magic2(7) + instanceId(16) + voicePort(2 LE) + machineId(16) + utf8 name.
+        // (machineId em campo FIXO antes do nome: o nome e "resto do datagrama" no parse.)
+        byte[] payload = new byte[Magic2.Length + 16 + 2 + 16 + _nameBytes.Length];
         int o = 0;
-        Buffer.BlockCopy(Magic, 0, payload, o, Magic.Length); o += Magic.Length;
+        Buffer.BlockCopy(Magic2, 0, payload, o, Magic2.Length); o += Magic2.Length;
         Buffer.BlockCopy(_instanceId.ToByteArray(), 0, payload, o, 16); o += 16;
         payload[o++] = (byte)(_voicePort & 0xFF);
         payload[o++] = (byte)((_voicePort >> 8) & 0xFF);
+        Buffer.BlockCopy(_machineId.ToByteArray(), 0, payload, o, 16); o += 16;
         Buffer.BlockCopy(_nameBytes, 0, payload, o, _nameBytes.Length);
 
         // 1) loopback: redundancia (so chega a UMA instancia local; o caso de duas
@@ -291,18 +369,30 @@ public sealed class DiscoveryService : IDisposable
 
     private void HandleBeacon(byte[] buf, int n, IPAddress srcIp)
     {
-        int min = Magic.Length + 16 + 2;
+        int min1 = Magic.Length + 16 + 2;
+        if (n < min1) return;
+        bool v2 = true;
+        for (int i = 0; i < Magic2.Length; i++)
+            if (buf[i] != Magic2[i]) { v2 = false; break; }
+        if (!v2)
+            for (int i = 0; i < Magic.Length; i++)
+                if (buf[i] != Magic[i]) return;
+        int min = v2 ? min1 + 16 : min1;
         if (n < min) return;
-        for (int i = 0; i < Magic.Length; i++)
-            if (buf[i] != Magic[i]) return;
 
         int o = Magic.Length;
         var idBytes = new byte[16];
         Buffer.BlockCopy(buf, o, idBytes, 0, 16); o += 16;
         var remoteId = new Guid(idBytes);
-        if (remoteId == _instanceId) return; // self-filter
+        if (remoteId == _instanceId) return; // self-filter (por processo)
 
         ushort voicePort = (ushort)(buf[o] | (buf[o + 1] << 8)); o += 2;
+        Guid remoteMachineId = Guid.Empty;
+        if (v2)
+        {
+            Buffer.BlockCopy(buf, o, idBytes, 0, 16); o += 16;
+            remoteMachineId = new Guid(idBytes);
+        }
         string name = n > min ? Encoding.UTF8.GetString(buf, o, n - min) : string.Empty;
 
         bool raise;
@@ -321,7 +411,7 @@ public sealed class DiscoveryService : IDisposable
                 raise = true;  // 1a vez, ip/porta mudou, ou TTL expirou
             }
         }
-        if (raise) PeerDiscovered?.Invoke(srcIp, voicePort, name);
+        if (raise) PeerDiscovered?.Invoke(srcIp, voicePort, name, remoteMachineId);
     }
 
     public void Stop()

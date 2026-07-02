@@ -50,8 +50,23 @@ internal static class Program
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
         Application.SetHighDpiMode(HighDpiMode.SystemAware);
+
+        // Instancia unica: duas instancias no mesmo PC se auto-conectavam uma na outra
+        // via beacon local e a pessoa passava a SE ESCUTAR SEMPRE. allowlocalpeers=1
+        // no config libera 2 instancias de proposito (teste local).
+        var bootConfig = Config.Load();
+        var singleInstance = new Mutex(true, @"Local\DuoVoz_SingleInstance_2f9d1c4b", out bool isFirstInstance);
+        if (!isFirstInstance && !bootConfig.AllowLocalPeers)
+        {
+            Log.Write("segunda instancia bloqueada (mutex)");
+            MessageBox.Show("O DuoVoz ja esta aberto neste computador.\nUse a janela que ja existe (ou o widget flutuante).",
+                "DuoVoz", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
         Log.Write("=== DuoVoz app start ===");
         Application.Run(new MainForm());
+        GC.KeepAlive(singleInstance);
     }
 }
 
@@ -168,7 +183,7 @@ internal sealed class MultiChannelToMonoSampleProvider : ISampleProvider
     }
 }
 
-public sealed class MainForm : Form
+public sealed partial class MainForm : Form
 {
     // â”€â”€â”€ Formatos fixos â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     private static readonly WaveFormat Pcm48Mono = new(48000, 16, 1);            // (rate, BITS, channels)
@@ -187,7 +202,7 @@ public sealed class MainForm : Form
 
     // â”€â”€â”€ Audio â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     private WaveInEvent? _mic;
-    private WasapiLoopbackCapture? _loopback;
+    private IWaveIn? _loopback; // WasapiLoopbackCapture (legado) ou ProcessLoopbackCapture
     private IWavePlayer? _output;
     private MixingSampleProvider? _mixer;
     private BufferedWaveProvider? _voiceJitter;   // voz recebida do parceiro
@@ -275,11 +290,13 @@ public sealed class MainForm : Form
     public MainForm()
     {
         _config = Config.Load();
+        _config.EnsureMachineId(); // dono unico da geracao do id persistente (Load nao escreve)
         BuildUi();
         PopulateDevices();
         ApplyConfigToUi();
         WireKeyboardForPtt();
         StartDiscovery();
+        InitPhase2(); // canal de controle, chat, widget, supressao de ruido, updater
     }
 
     // â”€â”€â”€ CONSTRUCAO DA UI â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -476,6 +493,8 @@ public sealed class MainForm : Form
         };
         Controls.Add(_lblDiag);
 
+        BuildPhase2Ui(); // supressao de ruido, widget, chat, enviar arquivo, atualizar, ajuda
+
         // Timer da UI (status + VU meters) ~250 ms.
         _uiTimer = new System.Windows.Forms.Timer { Interval = 250 };
         _uiTimer.Tick += OnUiTick;
@@ -580,7 +599,7 @@ public sealed class MainForm : Form
             // porta local p/ o beacon nunca anunciar uma porta diferente da que sera
             // efetivamente bindada no Connect() (evita mismatch silencioso).
             _numLocalPort.Enabled = false;
-            _discovery = new DiscoveryService(_instanceId, voicePort, Environment.MachineName);
+            _discovery = new DiscoveryService(_instanceId, voicePort, Environment.MachineName, _config.MachineId);
             _discovery.PeerDiscovered += OnPeerDiscovered;
             _discovery.Start();
             Log.Write($"discovery start (instanceId={_instanceId}, voicePort={voicePort}, name={Environment.MachineName})");
@@ -592,7 +611,7 @@ public sealed class MainForm : Form
     }
 
     // Vem de uma thread de rede -> marshala p/ a UI thread.
-    private void OnPeerDiscovered(IPAddress ip, ushort voicePort, string name)
+    private void OnPeerDiscovered(IPAddress ip, ushort voicePort, string name, Guid machineId)
     {
         if (!IsHandleCreated || IsDisposed) return;
         try
@@ -600,7 +619,20 @@ public sealed class MainForm : Form
             BeginInvoke((Action)(() =>
             {
                 if (IsDisposed) return;
-                Log.Write($"peer discovered ip={ip} voicePort={voicePort} name={name}");
+                Log.Write($"peer discovered ip={ip} voicePort={voicePort} name={name} machineId={machineId:N}");
+
+                // A PROPRIA maquina (2a instancia / loopback) nunca vira par â€” era a
+                // rota do "se escutar sozinha". allowlocalpeers=1 libera p/ teste.
+                if (ShouldIgnoreBeacon(ip, machineId, name))
+                {
+                    Log.Write("  skip: beacon da propria maquina");
+                    return;
+                }
+                if (machineId != Guid.Empty && machineId == _config.FriendId)
+                    Log.Write("  amigo conhecido: " + _config.FriendName);
+
+                // Canal de controle (chat/ping/arquivo) independe da voz.
+                _peerLink?.SetTarget(ip);
 
                 if (!_chkAutoConnect.Checked)
                 {
@@ -814,6 +846,7 @@ public sealed class MainForm : Form
         _lblStatus.ForeColor = Color.DarkOrange;
         Log.Write($"connect success local={localPort} remote={peerIp}:{remotePort}");
         SaveConfig();
+        OnVoiceConnected(peerIp); // canal de controle TCP 50780 + widget
     }
 
     private IWavePlayer BuildOutput()
@@ -928,7 +961,7 @@ public sealed class MainForm : Form
 
     private void StartLoopback()
     {
-        _loopback = new WasapiLoopbackCapture(); // dispositivo de render padrao
+        _loopback = CreateLoopbackCapture(); // process-loopback (exclui o DuoVoz) c/ fallback legado
         _musicAcc.Reset();
 
         // Constroi a cadeia de conversao UMA vez, com o formato REAL do loopback
@@ -1021,7 +1054,7 @@ public sealed class MainForm : Form
                 _micPeak = peak;
             }
 
-            FlushFramesAndSend(_micAcc, _micPacket, StreamVoice, ref _voiceSeq);
+            FlushVoiceFramesAndSend(); // = FlushFramesAndSend + supressao de ruido por frame de 10ms
         }
         catch (Exception ex)
         {
@@ -1311,6 +1344,7 @@ public sealed class MainForm : Form
             try { disc.Dispose(); } catch { }
             Log.Write("discovery stopped (form closing)");
         }
+        ShutdownPhase2(); // widget, chat, canal de controle, transferencias
         await TeardownAsync();
 
         _readyToClose = true;
