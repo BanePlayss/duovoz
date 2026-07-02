@@ -9,59 +9,65 @@ precisa digitar IP, porta nem escolher microfone.
 
 ---
 
-## Como rodar (Windows)
+## Instalar (recomendado — sem complicação)
 
-Precisa do **.NET 10 SDK**. Se não tiver, instale:
+Baixe e rode o instalador. **Não precisa de .NET nem de linha de comando.**
+
+### **[⬇ Baixar o instalador (DuoVoz-win-Setup.exe)](https://github.com/BanePlayss/duovoz/releases/latest/download/DuoVoz-win-Setup.exe)**
+
+1. Abra o `DuoVoz-win-Setup.exe` baixado.
+2. Na 1ª vez o Windows mostra "App não reconhecido" →
+   **Mais informações → Executar assim mesmo** (é seguro; só não é assinado digitalmente).
+3. Instala sozinho (**sem senha de administrador**), cria atalho no Menu Iniciar e na Área
+   de Trabalho, e já abre.
+
+Faça isso **nos dois PCs**. Use **fone de ouvido** dos dois lados. Cada um acha o outro na
+rede e conecta automaticamente. Se o Windows pedir, **libere no Firewall** (rede Privada).
+
+> Sem cancelamento de eco: em caixa de som dá microfonia. Fone nos dois lados.
+
+---
+
+## Rodar a partir do código (alternativa — para devs / assistente)
+
+Precisa do **.NET 10 SDK**. Se não tiver:
 
 ```powershell
 winget install Microsoft.DotNet.SDK.10
 ```
 
-Depois, na raiz deste repositório:
+Na raiz do repositório:
 
 ```powershell
 dotnet run -c Release
 ```
 
-(Isso baixa o NAudio, compila e abre o app. O executável também fica em
-`bin/Release/net10.0-windows/DuoVoz.exe`.)
-
-Faça isso **nos dois PCs**. Deixe **"Conectar automaticamente"** marcado — cada um acha o
-outro na rede e conecta sem você mexer em nada.
-
-### Importante
-- **Use fone de ouvido nos dois lados.** Não há cancelamento de eco; em caixa de som dá
-  microfonia/eco.
-- Na primeira conexão o Windows pode pedir para **liberar no Firewall** → **Permitir**
-  (rede **Privada**).
-- Os dois PCs precisam estar na **mesma rede local** (mesmo Wi-Fi/roteador).
+Se você é um **assistente (Claude)** configurando na máquina do parceiro: garanta o .NET 10
+SDK, rode `dotnet run -c Release`, deixe **"Conectar automaticamente"** marcado, e libere o
+`DuoVoz.exe` no Firewall (rede Privada) se aparecer o prompt. Ambos os lados: mesma LAN +
+fone. Log de diagnóstico em `%TEMP%\DuoVoz\duovoz.log`.
 
 ---
 
-## Para o assistente (Claude) na máquina do parceiro
+## Gerar o instalador (mantenedor)
 
-Se você é um assistente configurando isto:
+Requer `.NET 10 SDK`, `vpk` (`dotnet tool install -g vpk`) e `gh` autenticado. Depois:
 
-1. Verifique o .NET 10 SDK (`dotnet --version`). Se faltar:
-   `winget install Microsoft.DotNet.SDK.10`.
-2. Rode `dotnet run -c Release` na raiz do repo (restaura NAudio e compila).
-3. Na janela, deixe **"Conectar automaticamente (descobrir na rede)"** marcado. O app
-   anuncia-se por UDP broadcast (porta 50779) e conecta no par assim que o encontra.
-4. Se aparecer o prompt do **Firewall do Windows**, permita o `DuoVoz.exe` na rede
-   **Privada** (a descoberta usa broadcast UDP; bloqueado, não acha o par).
-5. Ambos os lados precisam: mesma LAN + fone de ouvido. Porta de voz padrão: 50777.
-6. Para diagnóstico, há um log em `%TEMP%\DuoVoz\duovoz.log` (eventos de descoberta,
-   conexão, etc.).
+```powershell
+./build-installer.ps1 -Version 1.0.1
+```
+
+Isso publica/compila, empacota o `Setup.exe` (Velopack) e sobe uma nova Release no GitHub.
 
 ---
 
 ## Notas técnicas
 
-- C# / .NET 10 / WinForms / **NAudio 2.3.0**.
+- C# / .NET 10 / WinForms / **NAudio 2.3.0**. Instalador/atualização: **Velopack**.
 - Voz: UDP, PCM 48 kHz mono 16-bit, frames de 10 ms; jitter buffer por stream.
 - Descoberta: UDP broadcast na porta **50779** (sai por todas as placas de rede, então
   funciona mesmo com adaptadores virtuais tipo VirtualBox no meio). Auto-filtro por
-  `instanceId` para não se conectar a si mesmo.
+  `instanceId` para não se conectar a si mesmo. Porta de voz padrão: **50777**.
 - "Compartilhar música": captura o som do sistema via **WASAPI loopback** (sem driver) e
   faz downmix de N canais (lida com saídas 5.1/7.1) para 48 kHz mono.
 - **Fase 1** (este repo): voz nos 2 sentidos + compartilhar música entre os dois PCs.

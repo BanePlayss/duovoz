@@ -33,6 +33,7 @@ using System.Windows.Forms;
 using NAudio.CoreAudioApi;
 using NAudio.Wave;
 using NAudio.Wave.SampleProviders;
+using Velopack;
 
 namespace DuoVoz;
 
@@ -41,6 +42,10 @@ internal static class Program
     [STAThread]
     private static void Main()
     {
+        // Velopack: trata os hooks de instalacao/atualizacao/desinstalacao e sai cedo
+        // quando invocado pelo instalador. Sem efeito quando rodado via 'dotnet run'.
+        VelopackApp.Build().Run();
+
         // Init explicito (sem depender do ApplicationConfiguration.Initialize gerado).
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
