@@ -25,6 +25,7 @@
 
 using System;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.Net;
 using System.Net.Sockets;
 using System.Threading;
@@ -59,8 +60,8 @@ internal static class Program
         if (!isFirstInstance && !bootConfig.AllowLocalPeers)
         {
             Log.Write("segunda instancia bloqueada (mutex)");
-            MessageBox.Show("O DuoVoz ja esta aberto neste computador.\nUse a janela que ja existe (ou o widget flutuante).",
-                "DuoVoz", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            MessageBox.Show("O CherrySpy ja esta aberto neste computador.\nUse a janela que ja existe (ou o widget flutuante).",
+                "CherrySpy", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
 
@@ -262,22 +263,38 @@ public sealed partial class MainForm : Form
     private bool _closing;          // FormClosing ja iniciado
     private bool _readyToClose;     // teardown concluido -> pode fechar de verdade
 
+    // â”€â”€â”€ Volume ao vivo (mixer) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // Mantidos como campos p/ ajustar o volume enquanto o audio toca (write de float
+    // e atomico; alterar .Volume da UI thread durante o playback e seguro).
+    private VolumeSampleProvider? _voiceVol;
+    private VolumeSampleProvider? _musicVol;
+
     // â”€â”€â”€ Controles WinForms â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     private ComboBox _cboInput = null!;
     private ComboBox _cboOutput = null!;
     private TextBox _txtPeerIp = null!;
     private NumericUpDown _numLocalPort = null!;
     private NumericUpDown _numRemotePort = null!;
-    private Button _btnConnect = null!;
-    private CheckBox _chkMute = null!;
-    private CheckBox _chkPtt = null!;
-    private CheckBox _chkShareMusic = null!;
+    private PillButton _btnConnect = null!;
+    private ToggleSwitch _chkMute = null!;   // ON = microfone aberto (nao mudo)
+    private ToggleSwitch _chkPtt = null!;
+    private ToggleSwitch _chkShareMusic = null!;
     private Label _lblStatus = null!;
     private Label _lblDiag = null!;
     private ProgressBar _vuMicOut = null!;
     private ProgressBar _vuPeerIn = null!;
     private System.Windows.Forms.Timer _uiTimer = null!;
-    private CheckBox _chkAutoConnect = null!;
+    private ToggleSwitch _chkAutoConnect = null!;
+    private VolumeSlider _sldVoice = null!;
+    private VolumeSlider _sldMusic = null!;
+    private Label _lblVoicePct = null!;
+    private Label _lblMusicPct = null!;
+    private Label _lblStatusDot = null!;
+    private Label _lblPeerChip = null!;
+
+    // Header / janela sem borda (arrastavel pelo header).
+    private Panel _header = null!;
+    private const int HeaderH = 52;
 
     // Descoberta na rede + guardas de auto-conexao
     private DiscoveryService? _discovery;
@@ -302,198 +319,230 @@ public sealed partial class MainForm : Form
     // â”€â”€â”€ CONSTRUCAO DA UI â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     private void BuildUi()
     {
-        Text = "DuoVoz â€” Intercomunicador de voz (LAN)";
-        Font = new Font("Segoe UI", 9f);
-        ClientSize = new Size(440, 502);
-        FormBorderStyle = FormBorderStyle.FixedSingle;
+        // â”€â”€â”€ Janela sem borda, arredondada, arrastavel pelo header (CherrySpy) â”€â”€â”€
+        Text = "CherrySpy";
+        Font = CherryTheme.Body;
+        FormBorderStyle = FormBorderStyle.None;
+        BackColor = CherryTheme.Panel;
+        ForeColor = CherryTheme.Text;
         MaximizeBox = false;
         StartPosition = FormStartPosition.CenterScreen;
+        ClientSize = new Size(404, 560);
         KeyPreview = true; // p/ capturar a tecla de push-to-talk
+        var appIcon = AppEnv.LoadAppIcon();
+        if (appIcon != null) Icon = appIcon;
 
-        int x = 16, y = 14, labelW = 130, ctrlX = 150, ctrlW = 270, rowH = 32;
+        int padX = 16;      // padding lateral do painel
+        int contentW = ClientSize.Width - padX * 2; // 372
+        int y = 0;
 
-        Label MakeLabel(string text, int yy)
+        // â”€â”€ 1. HEADER (unica alca de arraste) â”€â”€
+        _header = new Panel
         {
-            var l = new Label
-            {
-                Text = text,
-                Location = new Point(x, yy + 3),
-                Size = new Size(labelW, 22),
-                TextAlign = ContentAlignment.MiddleLeft,
-            };
-            Controls.Add(l);
-            return l;
-        }
+            Location = new Point(0, 0),
+            Size = new Size(ClientSize.Width, HeaderH),
+            BackColor = CherryTheme.Panel,
+        };
+        _header.Paint += PaintHeader;
+        _header.MouseDown += Header_MouseDown; // arraste via WM_NCLBUTTONDOWN/HTCAPTION
+        Controls.Add(_header);
+        // Botoes minimizar/fechar (pintados) no canto direito do header.
+        var btnClose = new IconButton { IconName = "close", Size = new Size(30, 30), Location = new Point(ClientSize.Width - 38, 11) };
+        btnClose.Click += (_, _) => Close();          // dispara o FormClosing/teardown existente
+        var btnMin = new IconButton { IconName = "minimize", Size = new Size(30, 30), Location = new Point(ClientSize.Width - 72, 11) };
+        btnMin.Click += (_, _) => WindowState = FormWindowState.Minimized;
+        _header.Controls.Add(btnClose);
+        _header.Controls.Add(btnMin);
+        y = HeaderH + 6;
 
-        // Dispositivo de entrada (microfone)
-        MakeLabel("Microfone:", y);
+        // â”€â”€ 2. Status row: bolinha + "Conectado â€” <peer>" + chip de iniciais â”€â”€
+        _lblStatusDot = new Label
+        {
+            Location = new Point(padX, y + 4),
+            Size = new Size(12, 12),
+            BackColor = CherryTheme.Panel,
+        };
+        _lblStatusDot.Paint += (s, e) =>
+        {
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            using var br = new SolidBrush(_connected ? CherryTheme.PinkDeep : CherryTheme.Dim);
+            e.Graphics.FillEllipse(br, 0, 0, 11, 11);
+        };
+        Controls.Add(_lblStatusDot);
+
+        _lblStatus = new Label
+        {
+            Location = new Point(padX + 20, y),
+            Size = new Size(contentW - 20 - 40, 20),
+            Text = "Desconectado",
+            Font = CherryTheme.Head,
+            ForeColor = CherryTheme.Text,
+            TextAlign = ContentAlignment.MiddleLeft,
+            BackColor = CherryTheme.Panel,
+        };
+        Controls.Add(_lblStatus);
+
+        _lblPeerChip = new Label
+        {
+            Location = new Point(ClientSize.Width - padX - 34, y - 5),
+            Size = new Size(34, 30),
+            Text = "?",
+            Font = CherryTheme.Label,
+            ForeColor = CherryTheme.PinkDeep,
+            TextAlign = ContentAlignment.MiddleCenter,
+            BackColor = CherryTheme.PinkGhost,
+        };
+        _lblPeerChip.Paint += (s, e) =>
+        {
+            var lbl = (Label)s!;
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            using (var gp = GfxExt.RoundedPath(new RectangleF(0, 0, lbl.Width - 1, lbl.Height - 1), 8))
+            using (var br = new SolidBrush(CherryTheme.PinkGhost))
+                e.Graphics.FillPath(br, gp);
+            TextRenderer.DrawText(e.Graphics, lbl.Text, CherryTheme.Label, lbl.ClientRectangle,
+                CherryTheme.PinkDeep, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+        };
+        Controls.Add(_lblPeerChip);
+        y += 34;
+
+        AddDivider(padX, ref y, contentW);
+
+        // â”€â”€ 4. Dispositivos (combos existentes, restilizados) â”€â”€
+        AddSmallLabel("MICROFONE", padX, y);
+        y += 18;
         _cboInput = new ComboBox
         {
-            Location = new Point(ctrlX, y),
-            Size = new Size(ctrlW, 24),
+            Location = new Point(padX, y),
+            Size = new Size(contentW, 26),
             DropDownStyle = ComboBoxStyle.DropDownList,
+            FlatStyle = FlatStyle.Flat,
+            DrawMode = DrawMode.OwnerDrawFixed,
+            BackColor = CherryTheme.Soft,
+            ForeColor = CherryTheme.Text,
+            Font = CherryTheme.Body,
+            ItemHeight = 20,
         };
+        _cboInput.DrawItem += Combo_DrawItem;
         Controls.Add(_cboInput);
-        y += rowH;
+        y += 34;
 
-        // Dispositivo de saida (fone)
-        MakeLabel("Saida (fone):", y);
+        AddSmallLabel("SAIDA", padX, y);
+        y += 18;
         _cboOutput = new ComboBox
         {
-            Location = new Point(ctrlX, y),
-            Size = new Size(ctrlW, 24),
+            Location = new Point(padX, y),
+            Size = new Size(contentW, 26),
             DropDownStyle = ComboBoxStyle.DropDownList,
+            FlatStyle = FlatStyle.Flat,
+            DrawMode = DrawMode.OwnerDrawFixed,
+            BackColor = CherryTheme.Soft,
+            ForeColor = CherryTheme.Text,
+            Font = CherryTheme.Body,
+            ItemHeight = 20,
         };
+        _cboOutput.DrawItem += Combo_DrawItem;
         Controls.Add(_cboOutput);
-        y += rowH;
+        y += 36;
 
-        // IP do parceiro
-        MakeLabel("IP do parceiro:", y);
-        _txtPeerIp = new TextBox
-        {
-            Location = new Point(ctrlX, y),
-            Size = new Size(ctrlW, 24),
-            Text = "127.0.0.1",
-        };
-        Controls.Add(_txtPeerIp);
-        y += rowH;
+        AddDivider(padX, ref y, contentW);
 
-        // Porta local
-        MakeLabel("Porta local:", y);
-        _numLocalPort = new NumericUpDown
-        {
-            Location = new Point(ctrlX, y),
-            Size = new Size(110, 24),
-            Minimum = 1,
-            Maximum = 65535,
-            Value = 50777,
-        };
-        Controls.Add(_numLocalPort);
-        y += rowH;
+        // â”€â”€ 6. VOLUME (voz + musica) â”€â”€
+        AddSmallLabel("VOLUME", padX, y);
+        y += 20;
 
-        // Porta remota
-        MakeLabel("Porta remota:", y);
-        _numRemotePort = new NumericUpDown
+        var lblVoiceCap = new Label { Text = "Voz", Location = new Point(padX, y + 1), Size = new Size(44, 20), Font = CherryTheme.Body, ForeColor = CherryTheme.Muted, BackColor = CherryTheme.Panel };
+        Controls.Add(lblVoiceCap);
+        _sldVoice = new VolumeSlider { Location = new Point(padX + 48, y), Size = new Size(contentW - 48 - 44, 22) };
+        _lblVoicePct = new Label { Location = new Point(ClientSize.Width - padX - 40, y + 1), Size = new Size(40, 20), Text = "90%", Font = CherryTheme.Mono, ForeColor = CherryTheme.Text, TextAlign = ContentAlignment.MiddleRight, BackColor = CherryTheme.Panel };
+        _sldVoice.ValueChanged += (_, _) =>
         {
-            Location = new Point(ctrlX, y),
-            Size = new Size(110, 24),
-            Minimum = 1,
-            Maximum = 65535,
-            Value = 50777,
+            _lblVoicePct.Text = _sldVoice.Value + "%";
+            var vv = _voiceVol; if (vv != null) vv.Volume = _sldVoice.Value / 100f;
+            _config.VoiceVolume = _sldVoice.Value;
+            if (!_initializingPhase2) { try { _config.Save(); } catch { } }
         };
-        Controls.Add(_numRemotePort);
-        y += rowH + 6;
+        Controls.Add(_sldVoice);
+        Controls.Add(_lblVoicePct);
+        y += 28;
 
-        // Botao conectar/desconectar
-        _btnConnect = new Button
+        var lblMusicCap = new Label { Text = "Musica", Location = new Point(padX, y + 1), Size = new Size(48, 20), Font = CherryTheme.Body, ForeColor = CherryTheme.Muted, BackColor = CherryTheme.Panel };
+        Controls.Add(lblMusicCap);
+        _sldMusic = new VolumeSlider { Location = new Point(padX + 48, y), Size = new Size(contentW - 48 - 44, 22) };
+        _lblMusicPct = new Label { Location = new Point(ClientSize.Width - padX - 40, y + 1), Size = new Size(40, 20), Text = "50%", Font = CherryTheme.Mono, ForeColor = CherryTheme.Text, TextAlign = ContentAlignment.MiddleRight, BackColor = CherryTheme.Panel };
+        _sldMusic.ValueChanged += (_, _) =>
         {
-            Location = new Point(x, y),
-            Size = new Size(ctrlW + (ctrlX - x), 34),
-            Text = "Conectar",
-            Font = new Font("Segoe UI", 10f, FontStyle.Bold),
+            _lblMusicPct.Text = _sldMusic.Value + "%";
+            var mv = _musicVol; if (mv != null) mv.Volume = _sldMusic.Value / 100f;
+            _config.MusicVolume = _sldMusic.Value;
+            if (!_initializingPhase2) { try { _config.Save(); } catch { } }
         };
-        _btnConnect.Click += OnConnectClick;
-        Controls.Add(_btnConnect);
-        y += 44;
+        Controls.Add(_sldMusic);
+        Controls.Add(_lblMusicPct);
+        y += 32;
 
-        // Checkboxes: Mudo / Push-to-talk
-        _chkMute = new CheckBox
-        {
-            Location = new Point(x, y),
-            Size = new Size(140, 24),
-            Text = "Mudo",
-        };
-        _chkMute.CheckedChanged += (_, _) => _muted = _chkMute.Checked;
-        Controls.Add(_chkMute);
+        AddDivider(padX, ref y, contentW);
 
-        _chkPtt = new CheckBox
-        {
-            Location = new Point(ctrlX, y),
-            Size = new Size(ctrlW, 24),
-            // Deixa explicito que PTT so funciona com a janela do DuoVoz em foco.
-            Text = "Push-to-talk (Espaco, so com janela em foco)",
-        };
+        // â”€â”€ 8. Toggles (microfone aberto / compartilhar musica / PTT) â”€â”€
+        // Microfone aberto: ON = NAO mudo (invertido em relacao a _muted).
+        _chkMute = AddToggleRow("micOff", "Microfone aberto", "desligado = mudo", padX, ref y);
+        _chkMute.Checked = true; // abre por padrao (nao mudo)
+        _chkMute.CheckedChanged += (_, _) => _muted = !_chkMute.Checked;
+
+        _chkShareMusic = AddToggleRow("music", "Compartilhar musica", "manda o som do seu PC", padX, ref y);
+        _chkShareMusic.CheckedChanged += OnShareMusicChanged;
+        _chkShareMusic.Enabled = false; // so apos conectar
+
+        _chkPtt = AddToggleRow("mic", "Falar apertando (push-to-talk)", "segura Espaco pra falar (janela em foco)", padX, ref y);
         _chkPtt.CheckedChanged += (_, _) =>
         {
             _pushToTalk = _chkPtt.Checked;
             _pttKeyDown = false;
         };
-        Controls.Add(_chkPtt);
-        y += rowH;
 
-        // Compartilhar musica
-        _chkShareMusic = new CheckBox
+        _chkAutoConnect = AddToggleRow("refresh", "Conectar sozinho", "acha o par na rede", padX, ref y);
+        _chkAutoConnect.Checked = true;
+        // Back-sync: flip do switch na tela atualiza o check do menu Config (o guard de
+        // igualdade em cada lado evita loop de CheckedChanged). _miAutoConnect e criado
+        // em BuildPhase2Ui, que roda logo abaixo antes de qualquer evento de UI disparar.
+        _chkAutoConnect.CheckedChanged += (_, _) =>
         {
-            Location = new Point(x, y),
-            Size = new Size(ctrlW + (ctrlX - x), 24),
-            Text = "Compartilhar musica (audio do sistema)",
+            if (_miAutoConnect != null && _miAutoConnect.Checked != _chkAutoConnect.Checked)
+                _miAutoConnect.Checked = _chkAutoConnect.Checked;
         };
-        _chkShareMusic.CheckedChanged += OnShareMusicChanged;
-        _chkShareMusic.Enabled = false; // so apos conectar
-        Controls.Add(_chkShareMusic);
-        y += rowH;
 
-        // Conectar automaticamente (descobrir o parceiro na rede).
-        _chkAutoConnect = new CheckBox
-        {
-            Location = new Point(x, y),
-            Size = new Size(ctrlW + (ctrlX - x), 24),
-            Text = "Conectar automaticamente (descobrir na rede)",
-            Checked = true,
-        };
-        Controls.Add(_chkAutoConnect);
-        y += rowH + 4;
+        AddDivider(padX, ref y, contentW);
 
-        // VU: microfone (saida)
-        MakeLabel("Microfone (envio):", y);
-        _vuMicOut = new ProgressBar
-        {
-            Location = new Point(ctrlX, y + 2),
-            Size = new Size(ctrlW, 18),
-            Minimum = 0,
-            Maximum = 100,
-            Style = ProgressBarStyle.Continuous,
-        };
+        // Campos de rede (ocultos: usados pela conexao/descoberta, sem UI no mockup).
+        _txtPeerIp = new TextBox { Text = "127.0.0.1", Visible = false };
+        _numLocalPort = new NumericUpDown { Minimum = 1, Maximum = 65535, Value = 50777, Visible = false };
+        _numRemotePort = new NumericUpDown { Minimum = 1, Maximum = 65535, Value = 50777, Visible = false };
+        Controls.Add(_txtPeerIp);
+        Controls.Add(_numLocalPort);
+        Controls.Add(_numRemotePort);
+
+        // VU meters (mantidos, discretos) â€” voz recebida e microfone enviado.
+        _vuMicOut = new ProgressBar { Location = new Point(padX, y), Size = new Size(contentW, 6), Minimum = 0, Maximum = 100, Style = ProgressBarStyle.Continuous };
         Controls.Add(_vuMicOut);
-        y += 28;
-
-        // VU: voz do parceiro (entrada)
-        MakeLabel("Voz parceiro (recebido):", y);
-        _vuPeerIn = new ProgressBar
-        {
-            Location = new Point(ctrlX, y + 2),
-            Size = new Size(ctrlW, 18),
-            Minimum = 0,
-            Maximum = 100,
-            Style = ProgressBarStyle.Continuous,
-        };
+        y += 10;
+        _vuPeerIn = new ProgressBar { Location = new Point(padX, y), Size = new Size(contentW, 6), Minimum = 0, Maximum = 100, Style = ProgressBarStyle.Continuous };
         Controls.Add(_vuPeerIn);
-        y += 30;
+        y += 12;
 
-        // Status
-        _lblStatus = new Label
-        {
-            Location = new Point(x, y),
-            Size = new Size(ctrlW + (ctrlX - x), 22),
-            Text = "Desconectado",
-            Font = new Font("Segoe UI", 9.5f, FontStyle.Bold),
-            ForeColor = Color.DimGray,
-        };
-        Controls.Add(_lblStatus);
-        y += 24;
-
-        // Diagnostico (jitter / perda)
+        // Diagnostico (jitter / perda).
         _lblDiag = new Label
         {
-            Location = new Point(x, y),
-            Size = new Size(ctrlW + (ctrlX - x), 22),
+            Location = new Point(padX, y),
+            Size = new Size(contentW, 16),
             Text = "",
-            ForeColor = Color.Gray,
-            Font = new Font("Consolas", 8.5f),
+            ForeColor = CherryTheme.Dim,
+            Font = CherryTheme.MonoSmall,
+            BackColor = CherryTheme.Panel,
         };
         Controls.Add(_lblDiag);
+        y += 20;
 
-        BuildPhase2Ui(); // supressao de ruido, widget, chat, enviar arquivo, atualizar, ajuda
+        _phase2Y = y;
+        BuildPhase2Ui(); // acoes (chat/ping/arquivo/atualizar/config) + botao Conectar
 
         // Timer da UI (status + VU meters) ~250 ms.
         _uiTimer = new System.Windows.Forms.Timer { Interval = 250 };
@@ -501,6 +550,129 @@ public sealed partial class MainForm : Form
         _uiTimer.Start();
 
         FormClosing += OnFormClosing;
+        Resize += (_, _) => { if (WindowState == FormWindowState.Normal) ApplyRoundedRegion(); };
+        Load += (_, _) => ApplyRoundedRegion();
+    }
+
+    // â”€â”€ Helpers de layout da nova UI â”€â”€
+    private void AddDivider(int x, ref int y, int w)
+    {
+        var d = new Panel { Location = new Point(x, y), Size = new Size(w, 1), BackColor = CherryTheme.Line };
+        Controls.Add(d);
+        y += 13;
+    }
+
+    private void AddSmallLabel(string text, int x, int y)
+    {
+        var l = new Label
+        {
+            Text = text,
+            Location = new Point(x, y),
+            Size = new Size(260, 16),
+            Font = CherryTheme.Label,
+            ForeColor = CherryTheme.Dim,
+            BackColor = CherryTheme.Panel,
+        };
+        Controls.Add(l);
+    }
+
+    // Linha de toggle: icone + titulo + hint + switch a direita. Devolve o switch.
+    private ToggleSwitch AddToggleRow(string icon, string title, string hint, int x, ref int y)
+    {
+        int w = ClientSize.Width - x * 2;
+        var ic = new Label { Location = new Point(x, y + 2), Size = new Size(22, 22), BackColor = CherryTheme.Panel };
+        ic.Paint += (s, e) => CherryIcons.Draw(e.Graphics, icon, new Rectangle(0, 0, 21, 21), CherryTheme.PinkDeep);
+        Controls.Add(ic);
+
+        var lblTitle = new Label { Text = title, Location = new Point(x + 30, y), Size = new Size(w - 30 - 50, 18), Font = CherryTheme.Head, ForeColor = CherryTheme.Text, BackColor = CherryTheme.Panel };
+        Controls.Add(lblTitle);
+        var lblHint = new Label { Text = hint, Location = new Point(x + 30, y + 18), Size = new Size(w - 30 - 50, 16), Font = CherryTheme.BodySmall, ForeColor = CherryTheme.Muted, BackColor = CherryTheme.Panel };
+        Controls.Add(lblHint);
+
+        var sw = new ToggleSwitch { Location = new Point(x + w - 40, y + 6) };
+        Controls.Add(sw);
+
+        y += 40;
+        return sw;
+    }
+
+    // Header: fundo + logo + "CherrySpy" + "VOZ · LAN".
+    private void PaintHeader(object? sender, PaintEventArgs e)
+    {
+        var g = e.Graphics;
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        using (var br = new SolidBrush(CherryTheme.Panel)) g.FillRectangle(br, _header.ClientRectangle);
+
+        // Logo (icone do app) 26px.
+        var ic = Icon;
+        int logo = 26;
+        if (ic != null)
+        {
+            using var bmp = ic.ToBitmap();
+            g.DrawImage(bmp, new Rectangle(16, (HeaderH - logo) / 2, logo, logo));
+        }
+        int tx = 16 + logo + 10;
+        TextRenderer.DrawText(g, "CherrySpy", CherryTheme.HeadBig, new Rectangle(tx, 8, 200, 22),
+            CherryTheme.Text, TextFormatFlags.Left);
+        TextRenderer.DrawText(g, "VOZ · LAN", CherryTheme.Label, new Rectangle(tx, 30, 200, 16),
+            CherryTheme.PinkDeep, TextFormatFlags.Left);
+
+        // Linha inferior sutil.
+        using var pen = new Pen(CherryTheme.Line2, 1f);
+        g.DrawLine(pen, 0, HeaderH - 1, _header.Width, HeaderH - 1);
+    }
+
+    // Combo flat: pinta o item com as cores do tema (bg soft, selecionado rosa claro).
+    private void Combo_DrawItem(object? sender, DrawItemEventArgs e)
+    {
+        var cbo = (ComboBox)sender!;
+        e.DrawBackground();
+        bool sel = (e.State & DrawItemState.Selected) != 0;
+        using (var bg = new SolidBrush(sel ? CherryTheme.PinkGhost : CherryTheme.Soft))
+            e.Graphics.FillRectangle(bg, e.Bounds);
+        string text = e.Index >= 0 ? cbo.Items[e.Index]?.ToString() ?? "" : "";
+        var textRect = new Rectangle(e.Bounds.X + 6, e.Bounds.Y, e.Bounds.Width - 26, e.Bounds.Height);
+        TextRenderer.DrawText(e.Graphics, text, CherryTheme.Body, textRect, CherryTheme.Text,
+            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+        // Chevron a direita.
+        var chev = new Rectangle(e.Bounds.Right - 20, e.Bounds.Y + (e.Bounds.Height - 14) / 2, 14, 14);
+        CherryIcons.Draw(e.Graphics, "chevronDown", chev, CherryTheme.Muted);
+    }
+
+    // Arraste da janela sem borda pelo header (equivale a HTCAPTION).
+    private const int WM_NCLBUTTONDOWN = 0xA1;
+    private const int HTCAPTION = 0x2;
+    private void Header_MouseDown(object? sender, MouseEventArgs e)
+    {
+        if (e.Button != MouseButtons.Left) return;
+        // Nao arrasta se o clique caiu sobre um controle-filho (botoes min/close).
+        if (_header.GetChildAtPoint(e.Location) != null) return;
+        NativeReleaseCaptureAndDrag();
+    }
+    private void NativeReleaseCaptureAndDrag()
+    {
+        ReleaseCapture();
+        SendMessage(Handle, WM_NCLBUTTONDOWN, (IntPtr)HTCAPTION, IntPtr.Zero);
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool ReleaseCapture();
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+
+    private void ApplyRoundedRegion()
+    {
+        try { Region = GfxExt.RoundedRegion(ClientSize, 16); } catch { }
+    }
+
+    // Borda rosa 1px por cima do painel (borderless).
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        base.OnPaint(e);
+        e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        using var gp = GfxExt.RoundedPath(new RectangleF(0.5f, 0.5f, ClientSize.Width - 1.5f, ClientSize.Height - 1.5f), 15.5f);
+        using var pen = new Pen(CherryTheme.Line, 1f);
+        e.Graphics.DrawPath(pen, gp);
     }
 
     private void PopulateDevices()
@@ -573,6 +745,13 @@ public sealed partial class MainForm : Form
             _numLocalPort.Value = Math.Clamp(_config.LocalPort, 1, 65535);
             _numRemotePort.Value = Math.Clamp(_config.RemotePort, 1, 65535);
             _chkAutoConnect.Checked = _config.AutoConnect;
+
+            _initializingPhase2 = true;
+            _sldVoice.Value = _config.VoiceVolume;
+            _sldMusic.Value = _config.MusicVolume;
+            _lblVoicePct.Text = _config.VoiceVolume + "%";
+            _lblMusicPct.Text = _config.MusicVolume + "%";
+            _initializingPhase2 = false;
         }
         catch { /* valores fora de faixa: ignora */ }
     }
@@ -757,7 +936,7 @@ public sealed partial class MainForm : Form
             Log.Write("connect FAILED (manual): " + ex.Message);
             await TeardownAsync();
             if (!IsDisposed)
-                MessageBox.Show(this, "Falha ao conectar: " + ex.Message, "DuoVoz",
+                MessageBox.Show(this, "Falha ao conectar: " + ex.Message, "CherrySpy",
                     MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
@@ -806,8 +985,10 @@ public sealed partial class MainForm : Form
         // p/ deixar headroom e evitar clipping quando voz + musica somam alto. A voz fica
         // mais forte que a musica (a musica e "fundo").
         _mixer = new MixingSampleProvider(Float48Mono) { ReadFully = true };
-        _mixer.AddMixerInput(new VolumeSampleProvider(_voiceJitter.ToSampleProvider()) { Volume = 0.9f });
-        _mixer.AddMixerInput(new VolumeSampleProvider(_musicJitter.ToSampleProvider()) { Volume = 0.5f });
+        _voiceVol = new VolumeSampleProvider(_voiceJitter.ToSampleProvider()) { Volume = _config.VoiceVolume / 100f };
+        _musicVol = new VolumeSampleProvider(_musicJitter.ToSampleProvider()) { Volume = _config.MusicVolume / 100f };
+        _mixer.AddMixerInput(_voiceVol);
+        _mixer.AddMixerInput(_musicVol);
 
         // Saida: WasapiOut no endpoint escolhido; senao WaveOutEvent padrao.
         // O mixer e ISampleProvider (float). IWavePlayer.Init exige IWaveProvider, e o
@@ -840,10 +1021,14 @@ public sealed partial class MainForm : Form
 
         _connected = true;
         _btnConnect.Text = "Desconectar";
+        _btnConnect.IconName = "close";
+        _btnConnect.FillColor = CherryTheme.Line2;
+        _btnConnect.Invalidate();
         _chkShareMusic.Enabled = true;
         SetControlsEnabled(false);
         _lblStatus.Text = "Conectado (aguardando pacotes...)";
-        _lblStatus.ForeColor = Color.DarkOrange;
+        _lblStatus.ForeColor = CherryTheme.PinkDeep;
+        _lblStatusDot.Invalidate();
         Log.Write($"connect success local={localPort} remote={peerIp}:{remotePort}");
         SaveConfig();
         OnVoiceConnected(peerIp); // canal de controle TCP 50780 + widget
@@ -950,7 +1135,7 @@ public sealed partial class MainForm : Form
             {
                 _chkShareMusic.Checked = false;
                 MessageBox.Show(this, "Falha ao iniciar captura de musica: " + ex.Message,
-                    "DuoVoz", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    "CherrySpy", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
         }
         else
@@ -1439,6 +1624,8 @@ public sealed partial class MainForm : Form
         // ja estao paradas e os handlers desligados, entao nenhum callback escreve mais.
         try { _mixer?.RemoveAllMixerInputs(); } catch { }
         _mixer = null;
+        _voiceVol = null;
+        _musicVol = null;
         _voiceJitter = null;
         _musicJitter = null;
 
@@ -1458,11 +1645,15 @@ public sealed partial class MainForm : Form
                 try
                 {
                     _btnConnect.Text = "Conectar";
+                    _btnConnect.IconName = "phone";
+                    _btnConnect.FillColor = CherryTheme.Pink;
+                    _btnConnect.Invalidate();
                     _chkShareMusic.Checked = false;
                     _chkShareMusic.Enabled = false;
                     SetControlsEnabled(true);
                     _lblStatus.Text = "Desconectado";
-                    _lblStatus.ForeColor = Color.DimGray;
+                    _lblStatus.ForeColor = CherryTheme.Muted;
+                    _lblStatusDot.Invalidate();
                 }
                 catch { }
             }

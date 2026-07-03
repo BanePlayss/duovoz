@@ -18,65 +18,118 @@ public sealed partial class MainForm
     private PingWidget? _widget;
     private NoiseSuppressor? _noise;
     private System.Windows.Forms.Timer? _phase2Timer;
-    private CheckBox _chkNoise = null!;
-    private CheckBox _chkWidget = null!;
-    private Button _btnUpdate = null!;
-    private Button _btnSendFile = null!;
-    private Button _btnChat = null!;
-    private Button _btnHelp = null!;
+    private ToolStripMenuItem _miNoise = null!;
+    private ToolStripMenuItem _miWidget = null!;
+    private ToolStripMenuItem _miAutoConnect = null!;
+    private IconButton _btnUpdate = null!;
+    private IconButton _btnSendFile = null!;
+    private IconButton _btnChat = null!;
+    private IconButton _btnPing = null!;
+    private IconButton _btnConfig = null!;
     private int _unread;
     private long _lastPingSent;
     private bool _initializingPhase2; // suprime a escrita de config nos handlers durante o init
 
-    // Chamado no fim do BuildUi (antes do timer da UI).
+    // Chamado no fim do BuildUi (recebe o Y atual do layout via campo _phase2Y).
+    private int _phase2Y;
+    private ContextMenuStrip _configMenu = null!;
     private void BuildPhase2Ui()
     {
-        ClientSize = new Size(440, 544); // abre espaco pras linhas novas
-        var ic = AppEnv.LoadAppIcon();
-        if (ic != null) Icon = ic;
+        int padX = 16;
+        int y = _phase2Y > 0 ? _phase2Y : ClientSize.Height - 120;
+        int contentW = ClientSize.Width - padX * 2;
 
-        // Criados como false; os valores reais chegam em InitPhase2 sob _initializingPhase2
-        // (evita uma escrita de config redundante quando o valor salvo difere do default).
-        _chkNoise = new CheckBox { Location = new Point(16, 434), Size = new Size(198, 24), Text = "Supressao de ruido", Checked = false };
-        _chkNoise.CheckedChanged += (_, _) =>
+        // â”€â”€ 10. Acoes (cada uma UMA vez): Chat, Ping, Arquivo, Atualizar, Config â”€â”€
+        int nBtns = 5;
+        int gap = 6;
+        int bw = (contentW - gap * (nBtns - 1)) / nBtns;
+        int bh = 56;
+        int bx = padX;
+
+        _btnChat = MakeAction("chat", "Chat", bx, y, bw, bh); bx += bw + gap;
+        _btnChat.Click += (_, _) => OpenChat();
+        _btnPing = MakeAction("bell", "Ping", bx, y, bw, bh); bx += bw + gap;
+        _btnPing.Click += (_, _) => _ = DoPingAsync();
+        _btnSendFile = MakeAction("upload", "Arquivo", bx, y, bw, bh); bx += bw + gap;
+        _btnSendFile.Click += (_, _) => PickAndSendFile();
+        _btnUpdate = MakeAction("refresh", "Atualizar", bx, y, bw, bh); bx += bw + gap;
+        _btnUpdate.Click += async (_, _) => await Updater.CheckInteractiveAsync(this, _btnUpdate);
+        _btnConfig = MakeAction("gear", "Config", bx, y, bw, bh);
+        _btnConfig.Click += (_, _) => _configMenu.Show(_btnConfig, new Point(0, _btnConfig.Height));
+        y += bh + 12;
+
+        // â”€â”€ Menu Config (overflow): ruido, widget, auto-conectar, ajuda, sair â”€â”€
+        _configMenu = new ContextMenuStrip { Font = CherryTheme.Body };
+        _miNoise = new ToolStripMenuItem("Supressao de ruido") { CheckOnClick = true };
+        _miNoise.CheckedChanged += (_, _) =>
         {
-            if (_noise != null) _noise.Enabled = _chkNoise.Checked;
+            if (_noise != null) _noise.Enabled = _miNoise.Checked;
             if (_initializingPhase2) return;
-            _config.NoiseSuppress = _chkNoise.Checked;
+            _config.NoiseSuppress = _miNoise.Checked;
             try { _config.Save(); } catch { }
         };
-        Controls.Add(_chkNoise);
-
-        _chkWidget = new CheckBox { Location = new Point(222, 434), Size = new Size(198, 24), Text = "Mostrar widget flutuante", Checked = false };
-        _chkWidget.CheckedChanged += (_, _) =>
+        _miWidget = new ToolStripMenuItem("Mostrar widget flutuante") { CheckOnClick = true };
+        _miWidget.CheckedChanged += (_, _) =>
         {
             if (!_initializingPhase2)
             {
-                _config.ShowWidget = _chkWidget.Checked;
+                _config.ShowWidget = _miWidget.Checked;
                 try { _config.Save(); } catch { }
             }
             if (_widget == null || _widget.IsDisposed) return;
-            if (_chkWidget.Checked) _widget.ShowNoActivate(); else _widget.Hide();
+            if (_miWidget.Checked) _widget.ShowNoActivate(); else _widget.Hide();
         };
-        Controls.Add(_chkWidget);
+        // Espelha o toggle "Conectar sozinho" da tela p/ o menu (mesma flag).
+        _miAutoConnect = new ToolStripMenuItem("Conectar sozinho (achar par)") { CheckOnClick = true };
+        _miAutoConnect.CheckedChanged += (_, _) =>
+        {
+            if (_chkAutoConnect != null && _chkAutoConnect.Checked != _miAutoConnect.Checked)
+                _chkAutoConnect.Checked = _miAutoConnect.Checked;
+        };
+        _configMenu.Items.Add(_miNoise);
+        _configMenu.Items.Add(_miWidget);
+        _configMenu.Items.Add(_miAutoConnect);
+        _configMenu.Items.Add(new ToolStripSeparator());
+        _configMenu.Items.Add("Ajuda (eco / se escutar sozinho)", null, (_, _) => ShowEchoHelp());
+        _configMenu.Items.Add("Sair", null, (_, _) => Close());
 
-        _btnChat = new Button { Location = new Point(16, 464), Size = new Size(128, 30), Text = "Chat" };
-        _btnChat.Click += (_, _) => OpenChat();
-        _btnSendFile = new Button { Location = new Point(152, 464), Size = new Size(128, 30), Text = "Enviar arquivo" };
-        _btnSendFile.Click += (_, _) => PickAndSendFile();
-        _btnUpdate = new Button { Location = new Point(288, 464), Size = new Size(132, 30), Text = "Atualizar" };
-        _btnUpdate.Click += async (_, _) => await Updater.CheckInteractiveAsync(this, _btnUpdate);
-        _btnHelp = new Button { Location = new Point(16, 502), Size = new Size(404, 28), Text = "Ajuda (eco / se escutar sozinho)" };
-        _btnHelp.Click += (_, _) => ShowEchoHelp();
-        Controls.AddRange(new Control[] { _btnChat, _btnSendFile, _btnUpdate, _btnHelp });
+        // â”€â”€ 11. Botao Conectar/Desconectar full-width (rosa) â”€â”€
+        _btnConnect = new PillButton
+        {
+            Location = new Point(padX, y),
+            Size = new Size(contentW, 44),
+            Text = "Conectar",
+            IconName = "phone",
+            FillColor = CherryTheme.Pink,
+        };
+        _btnConnect.Click += OnConnectClick;
+        Controls.Add(_btnConnect);
+        y += 52;
+
+        // Ajusta a altura final da janela ao conteudo.
+        ClientSize = new Size(ClientSize.Width, y + 8);
+    }
+
+    private IconButton MakeAction(string icon, string caption, int x, int y, int w, int h)
+    {
+        var b = new IconButton
+        {
+            IconName = icon,
+            Caption = caption,
+            Location = new Point(x, y),
+            Size = new Size(w, h),
+        };
+        Controls.Add(b);
+        return b;
     }
 
     // Chamado no fim do construtor.
     private void InitPhase2()
     {
         _initializingPhase2 = true;
-        _chkNoise.Checked = _config.NoiseSuppress;
-        _chkWidget.Checked = _config.ShowWidget;
+        _miNoise.Checked = _config.NoiseSuppress;
+        _miWidget.Checked = _config.ShowWidget;
+        _miAutoConnect.Checked = _chkAutoConnect.Checked;
         _initializingPhase2 = false;
         _noise = new NoiseSuppressor { Enabled = _config.NoiseSuppress };
 
@@ -118,7 +171,7 @@ public sealed partial class MainForm
             WindowState = FormWindowState.Normal;
             Activate();
         };
-        _widget.HideWidgetClicked += () => _chkWidget.Checked = false;
+        _widget.HideWidgetClicked += () => _miWidget.Checked = false;
         _widget.Moved += (wx, wy) =>
         {
             _config.WidgetX = wx;
@@ -249,7 +302,7 @@ public sealed partial class MainForm
     {
         var res = MessageBox.Show(this,
             $"{DisplayPeerName()} quer te enviar um arquivo:\n\n{name}\nTamanho: {AppEnv.FormatBytes(size)}\n\nAceitar e salvar em Downloads\\DuoVoz?",
-            "DuoVoz - Receber arquivo", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+            "CherrySpy - Receber arquivo", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
         if (res == DialogResult.Yes)
         {
             OpenChat();
@@ -347,9 +400,9 @@ public sealed partial class MainForm
             "Se alguem SE ESCUTA SEMPRE (mesmo sem compartilhar musica), verificar NO PC DE QUEM SE ESCUTA:\n\n" +
             "1) Painel de Som > Gravacao > Microfone > Propriedades > aba Escutar > DESMARCAR \"Ouvir este dispositivo\".\n\n" +
             "2) Sidetone/retorno do headset no software do fabricante (ex.: Logitech G HUB) - desligar.\n\n" +
-            "3) Nunca abrir o DuoVoz duas vezes no mesmo PC (o app agora bloqueia sozinho).\n\n" +
+            "3) Nunca abrir o CherrySpy duas vezes no mesmo PC (o app agora bloqueia sozinho).\n\n" +
             "4) Ambos devem usar FONE DE OUVIDO - caixa de som volta pro microfone e vira eco.",
-            "DuoVoz - Ajuda", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            "CherrySpy - Ajuda", MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
 
     private void SafeBeginInvoke(Action a)

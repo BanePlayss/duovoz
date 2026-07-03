@@ -32,7 +32,7 @@ public sealed class ChatWindow : Form
     {
         _sendChat = sendChat;
         _sendFile = sendFile;
-        Text = "DuoVoz - Chat";
+        Text = "CherrySpy - Chat";
         Font = new Font("Segoe UI", 9f);
         ClientSize = new Size(420, 470);
         MinimumSize = new Size(380, 340);

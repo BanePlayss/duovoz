@@ -15,11 +15,12 @@ if (Test-Path $pub) { Remove-Item $pub -Recurse -Force }
 dotnet publish $proj -c Release -r win-x64 --self-contained true -o $pub
 
 # 2) Empacota o instalador + pacotes de atualizacao.
-vpk pack -u DuoVoz -v $Version -p $pub -e DuoVoz.exe --packTitle "DuoVoz" --packAuthors "BanePlayss" -o $rel
+#    packId "DuoVoz" NAO muda (identidade p/ auto-update); so o packTitle vira "CherrySpy".
+vpk pack -u DuoVoz -v $Version -p $pub -e DuoVoz.exe --packTitle "CherrySpy" --packAuthors "BanePlayss" -i (Join-Path $root "CherrySpy.ico") -o $rel
 
 # 3) Publica a Release no GitHub (usa o token do gh).
 $token = gh auth token
-vpk upload github -o $rel --repoUrl "https://github.com/BanePlayss/duovoz" --token $token --publish true --releaseName "DuoVoz $Version" --tag "v$Version"
+vpk upload github -o $rel --repoUrl "https://github.com/BanePlayss/duovoz" --token $token --publish true --releaseName "CherrySpy $Version" --tag "v$Version"
 
 Write-Host "OK: Release v$Version publicada. Link do instalador:"
 Write-Host "https://github.com/BanePlayss/duovoz/releases/latest/download/DuoVoz-win-Setup.exe"

@@ -21,7 +21,7 @@ public static class Updater
     private static UpdateManager NewManager() => new(new GithubSource(RepoUrl, null, false));
 
     /// <summary>Checagem silenciosa ~15s apos abrir; se houver update marca botao + badge.</summary>
-    public static async void AutoCheckLater(Form owner, Button btn, Action onAvailable)
+    public static async void AutoCheckLater(Form owner, Control btn, Action onAvailable)
     {
         try
         {
@@ -43,7 +43,7 @@ public static class Updater
     }
 
     /// <summary>Fluxo do botao Atualizar (chamar na UI thread; await preserva o contexto).</summary>
-    public static async Task CheckInteractiveAsync(Form owner, Button btn)
+    public static async Task CheckInteractiveAsync(Form owner, Control btn)
     {
         if (_busy) return;
         _busy = true;
@@ -56,7 +56,7 @@ public static class Updater
                 MessageBox.Show(owner,
                     "A atualizacao automatica so funciona na versao instalada pelo instalador.\n" +
                     "Baixe a versao mais recente em:\n" + RepoUrl + "/releases",
-                    "DuoVoz", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    "CherrySpy", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
 
@@ -66,7 +66,7 @@ public static class Updater
             if (info == null)
             {
                 MessageBox.Show(owner, $"Voce ja esta na versao mais recente (v{mgr.CurrentVersion}).",
-                    "DuoVoz", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    "CherrySpy", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
 
@@ -84,7 +84,7 @@ public static class Updater
         catch (Exception ex)
         {
             Log.Write("update: falhou: " + ex.Message);
-            MessageBox.Show(owner, "Falha ao atualizar: " + ex.Message, "DuoVoz",
+            MessageBox.Show(owner, "Falha ao atualizar: " + ex.Message, "CherrySpy",
                 MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
         finally

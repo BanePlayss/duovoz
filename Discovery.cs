@@ -55,6 +55,8 @@ public sealed class Config
     public int FriendPort = 50777;
     public bool NoiseSuppress = true;
     public bool ShowWidget = true;
+    public int VoiceVolume = 90;          // 0..100 (mixer voz)
+    public int MusicVolume = 50;          // 0..100 (mixer musica)
     public int WidgetX = -1;
     public int WidgetY = -1;
     public bool AllowLocalPeers = false;  // 1 = permite 2 instancias locais (teste)
@@ -121,6 +123,8 @@ public sealed class Config
                     case "friendport": if (int.TryParse(v, out var fpt)) c.FriendPort = fpt; break;
                     case "noisesuppress": c.NoiseSuppress = v == "1" || v.Equals("true", StringComparison.OrdinalIgnoreCase); break;
                     case "showwidget": c.ShowWidget = v == "1" || v.Equals("true", StringComparison.OrdinalIgnoreCase); break;
+                    case "voicevolume": if (int.TryParse(v, out var vv)) c.VoiceVolume = Math.Clamp(vv, 0, 100); break;
+                    case "musicvolume": if (int.TryParse(v, out var mv)) c.MusicVolume = Math.Clamp(mv, 0, 100); break;
                     case "widgetx": if (int.TryParse(v, out var wx)) c.WidgetX = wx; break;
                     case "widgety": if (int.TryParse(v, out var wy)) c.WidgetY = wy; break;
                     case "allowlocalpeers": c.AllowLocalPeers = v == "1" || v.Equals("true", StringComparison.OrdinalIgnoreCase); break;
@@ -152,6 +156,8 @@ public sealed class Config
             sb.AppendLine($"friendport={FriendPort}");
             sb.AppendLine($"noisesuppress={(NoiseSuppress ? "1" : "0")}");
             sb.AppendLine($"showwidget={(ShowWidget ? "1" : "0")}");
+            sb.AppendLine($"voicevolume={VoiceVolume}");
+            sb.AppendLine($"musicvolume={MusicVolume}");
             sb.AppendLine($"widgetx={WidgetX}");
             sb.AppendLine($"widgety={WidgetY}");
             sb.AppendLine($"allowlocalpeers={(AllowLocalPeers ? "1" : "0")}");

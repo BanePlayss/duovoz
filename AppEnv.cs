@@ -33,12 +33,12 @@ public static class AppEnv
         }
     }
 
-    /// <summary>Carrega DuoVoz.ico ao lado do exe; null se nao existir (dev run).</summary>
+    /// <summary>Carrega CherrySpy.ico ao lado do exe; null se nao existir (dev run).</summary>
     public static Icon? LoadAppIcon()
     {
         try
         {
-            string p = Path.Combine(AppContext.BaseDirectory, "DuoVoz.ico");
+            string p = Path.Combine(AppContext.BaseDirectory, "CherrySpy.ico");
             if (File.Exists(p)) return new Icon(p);
         }
         catch (Exception ex) { Log.Write("icone nao carregou: " + ex.Message); }

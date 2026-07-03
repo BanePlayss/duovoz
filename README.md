@@ -1,4 +1,7 @@
-# DuoVoz
+# CherrySpy
+
+> Antigo "DuoVoz". O app agora se chama **CherrySpy**; o repositório e o instalador mantêm o
+> nome interno `duovoz` só pra não quebrar a atualização automática de quem já tinha instalado.
 
 Intercomunicador de voz **ponto-a-ponto na rede local (LAN)** para um casal: um canal de
 voz privado, **totalmente separado do Discord**. Um lado fala, o outro ouve no fone. Tem
