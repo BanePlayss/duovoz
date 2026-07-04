@@ -241,6 +241,7 @@ public sealed partial class MainForm : Form
     // Timestamp do ultimo pacote recebido (ticks) â€” escrito na rx thread, lido na UI timer.
     private long _lastPacketTicks;
     private long _hasReceivedAny; // 0/1 via Interlocked
+    private long _lastMusicRecvTicks; // ultima chegada de StreamMusic (p/ controle remoto de musica)
 
     // Diagnostico de perda (so leitura informacional).
     private long _voiceLastSeq = -1;
@@ -497,6 +498,9 @@ public sealed partial class MainForm : Form
         _chkShareMusic = AddToggleRow("music", "Compartilhar musica", "manda o som do seu PC", padX, ref y);
         _chkShareMusic.CheckedChanged += OnShareMusicChanged;
         _chkShareMusic.Enabled = false; // so apos conectar
+
+        // Controle remoto da musica do par (Spotify etc): prev / play-pause / next.
+        AddMediaRow(padX, contentW, ref y);
 
         _chkPtt = AddToggleRow("mic", "Falar apertando (push-to-talk)", "segura Espaco pra falar (janela em foco)", padX, ref y);
         _chkPtt.CheckedChanged += (_, _) =>
@@ -1412,6 +1416,7 @@ public sealed partial class MainForm : Form
                         TrackLoss(ref _musicLastSeq, seq);
                         PrimeJitter(_musicJitter, ref _musicPrimed);
                         _musicJitter?.AddSamples(data, HeaderBytes, payloadLen);
+                        Interlocked.Exchange(ref _lastMusicRecvTicks, DateTime.UtcNow.Ticks);
                         break;
 
                     case StreamHeartbeat:

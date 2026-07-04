@@ -26,6 +26,10 @@ public sealed partial class MainForm
     private IconButton _btnChat = null!;
     private IconButton _btnPing = null!;
     private IconButton _btnConfig = null!;
+    private IconButton _btnMediaPrev = null!;
+    private IconButton _btnMediaPlay = null!;
+    private IconButton _btnMediaNext = null!;
+    private MediaKeyHook? _mediaHook;
     private int _unread;
     private long _lastPingSent;
     private bool _initializingPhase2; // suprime a escrita de config nos handlers durante o init
@@ -91,7 +95,7 @@ public sealed partial class MainForm
         _configMenu.Items.Add(_miAutoConnect);
         _configMenu.Items.Add(new ToolStripSeparator());
         _configMenu.Items.Add("Ajuda (eco / se escutar sozinho)", null, (_, _) => ShowEchoHelp());
-        _configMenu.Items.Add("Sair", null, (_, _) => Close());
+        _configMenu.Items.Add("Sair", null, (_, _) => { _forceQuit = true; Close(); }); // sair de verdade (nao esconder na bandeja)
 
         // â”€â”€ 11. Botao Conectar/Desconectar full-width (rosa) â”€â”€
         _btnConnect = new PillButton
@@ -108,6 +112,51 @@ public sealed partial class MainForm
 
         // Ajusta a altura final da janela ao conteudo.
         ClientSize = new Size(ClientSize.Width, y + 8);
+    }
+
+    // Linha de controle remoto da musica do par (Spotify etc). Os botoes mandam
+    // um comando de midia pro par, que injeta a tecla de midia global no PC dele.
+    private void AddMediaRow(int padX, int contentW, ref int y)
+    {
+        var lbl = new Label
+        {
+            Text = "Musica do par",
+            Location = new Point(padX, y + 12),
+            Size = new Size(160, 18),
+            Font = CherryTheme.Body,
+            ForeColor = CherryTheme.Muted,
+            BackColor = CherryTheme.Panel,
+        };
+        Controls.Add(lbl);
+
+        int bw = 46, bh = 40, gap = 8;
+        int bx = padX + contentW - (bw * 3 + gap * 2);
+        _btnMediaPrev = new IconButton { IconName = "skipPrev", Size = new Size(bw, bh), Location = new Point(bx, y), Enabled = false };
+        _btnMediaPlay = new IconButton { IconName = "playPause", Size = new Size(bw, bh), Location = new Point(bx + bw + gap, y), Enabled = false };
+        _btnMediaNext = new IconButton { IconName = "skipNext", Size = new Size(bw, bh), Location = new Point(bx + 2 * (bw + gap), y), Enabled = false };
+        _btnMediaPrev.Click += (_, _) => _ = _peerLink?.SendMediaAsync(MediaAction.Prev);
+        _btnMediaPlay.Click += (_, _) => _ = _peerLink?.SendMediaAsync(MediaAction.PlayPause);
+        _btnMediaNext.Click += (_, _) => _ = _peerLink?.SendMediaAsync(MediaAction.Next);
+        Controls.Add(_btnMediaPrev);
+        Controls.Add(_btnMediaPlay);
+        Controls.Add(_btnMediaNext);
+        y += bh + 10;
+    }
+
+    // True => a tecla de midia foi ENCAMINHADA ao par (e suprimida aqui). So intercepta
+    // quando estou OUVINDO a musica do par (recebendo StreamMusic ha < 2s) e NAO estou
+    // compartilhando a minha — ai minha tecla controla o player DELE. Fora disso, deixa
+    // passar pro meu proprio player local.
+    private bool OnLocalMediaKey(MediaAction a)
+    {
+        var pl = _peerLink;
+        if (pl == null || !pl.IsConnected) return false;
+        if (_chkShareMusic != null && _chkShareMusic.Checked) return false; // eu sou o DJ
+        long ticks = Interlocked.Read(ref _lastMusicRecvTicks);
+        double age = (DateTime.UtcNow.Ticks - ticks) / (double)TimeSpan.TicksPerSecond;
+        if (age > 2.0) return false; // nao estou recebendo a musica dele agora
+        _ = pl.SendMediaAsync(a);
+        return true;
     }
 
     private IconButton MakeAction(string icon, string caption, int x, int y, int w, int h)
@@ -142,6 +191,9 @@ public sealed partial class MainForm
         _peerLink.LinkDown += () => SafeBeginInvoke(UpdateWidget);
         _peerLink.ChatReceived += (text, _) => SafeBeginInvoke(() => OnChatReceived(text));
         _peerLink.PingReceived += () => SafeBeginInvoke(OnPingReceived);
+        // Comando de midia do par: injeta a tecla de midia global aqui (controla meu player).
+        // keybd_event e seguro fora da UI thread; nao precisa marshalar.
+        _peerLink.MediaReceived += a => { try { MediaKeys.Send(a); } catch { } };
 
         _fileTransfer = new FileTransferService(_peerLink);
         _fileTransfer.OfferReceived += (tid, nm, sz) => SafeBeginInvoke(() => OnFileOffer(tid, nm, sz));
@@ -186,6 +238,11 @@ public sealed partial class MainForm
         _phase2Timer.Tick += (_, _) => UpdateWidget();
         _phase2Timer.Start();
 
+        // Hook global de teclas de midia (next/prev/play-pause): minha tecla passa a
+        // controlar a musica que EU estou ouvindo do par (quando ELE e o DJ).
+        try { _mediaHook = new MediaKeyHook { OnMediaKey = OnLocalMediaKey }; }
+        catch (Exception ex) { Log.Write("media hook init falhou: " + ex.Message); }
+
         Updater.AutoCheckLater(this, _btnUpdate, () => SafeBeginInvoke(() => _widget?.SetUpdateBadge(true)));
     }
 
@@ -194,6 +251,8 @@ public sealed partial class MainForm
     {
         try { _phase2Timer?.Stop(); } catch { }
         _phase2Timer = null;
+        try { _mediaHook?.Dispose(); } catch { }
+        _mediaHook = null;
         try { _widget?.Close(); _widget?.Dispose(); } catch { }
         _widget = null;
         try { _chat?.ForceClose(); } catch { }
@@ -285,7 +344,12 @@ public sealed partial class MainForm
         EnsureChat();
         _chat!.Show();
         _chat.WindowState = FormWindowState.Normal;
+        // O widget e TopMost; sem isto o chat abre ATRAS dele. O pulo TopMost on->off
+        // joga o chat acima da faixa "sempre no topo" e depois solta (nao fica preso la).
+        _chat.TopMost = true;
         _chat.BringToFront();
+        _chat.Activate();
+        _chat.TopMost = false;
         _unread = 0;
         _widget?.SetUnread(0);
     }
@@ -348,9 +412,11 @@ public sealed partial class MainForm
             dot = linkUp ? Color.Orange : Color.Firebrick;  // vermelho offline
         }
         string name = linkUp && !string.IsNullOrEmpty(_peerLink!.PeerName)
-            ? "Amiga: " + _peerLink.PeerName
-            : _config.FriendName.Length > 0 ? "Amiga: " + _config.FriendName + " (off)" : "Sem par";
+            ? _peerLink.PeerName
+            : _config.FriendName.Length > 0 ? _config.FriendName + " (off)" : "Sem par";
         _widget.SetStatus(dot, name);
+        bool mediaOn = linkUp;
+        if (_btnMediaPrev != null) { _btnMediaPrev.Enabled = mediaOn; _btnMediaPlay.Enabled = mediaOn; _btnMediaNext.Enabled = mediaOn; }
     }
 
     // Substitui o FlushFramesAndSend na voz: aplica supressao de ruido POR FRAME

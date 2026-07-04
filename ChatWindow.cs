@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.IO;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -8,13 +9,14 @@ using System.Windows.Forms;
 namespace DuoVoz;
 
 /// <summary>
-/// Janela de chat (nao TopMost). Enter envia. Historico persistido em
-/// %APPDATA%\DuoVoz\chat-history.txt (append; carrega as ultimas 200 linhas).
-/// Aceita arrastar-e-soltar arquivo p/ enviar. Fechar so esconde (ForceClose fecha).
+/// Janela de chat estilo widget (borderless arredondada, tema CherrySpy). Links no
+/// historico sao clicaveis (RichTextBox.DetectUrls -> abre no navegador). Enter envia.
+/// Historico persistido em %APPDATA%\DuoVoz\chat-history.txt (append; ultimas 200 linhas).
+/// Aceita arrastar-e-soltar arquivo. Fechar (X do header / Alt+F4) so esconde; ForceClose fecha.
 /// </summary>
 public sealed class ChatWindow : Form
 {
-    private readonly TextBox _history;
+    private readonly RichTextBox _history;
     private readonly TextBox _input;
     private readonly Panel _transferPanel;
     private readonly Label _lblTransfer;
@@ -26,49 +28,86 @@ public sealed class ChatWindow : Form
     private string _savedPath = "";
     private bool _forceClose;
 
+    private Point _dragOff;
+    private bool _dragging;
+
     public event Action? CancelTransfer;
 
     public ChatWindow(Func<string, Task<bool>> sendChat, Action<string> sendFile)
     {
         _sendChat = sendChat;
         _sendFile = sendFile;
+
         Text = "CherrySpy - Chat";
-        Font = new Font("Segoe UI", 9f);
-        ClientSize = new Size(420, 470);
-        MinimumSize = new Size(380, 340);
+        FormBorderStyle = FormBorderStyle.None;
         StartPosition = FormStartPosition.CenterScreen;
+        ClientSize = new Size(400, 466);
+        BackColor = CherryTheme.Page;
+        Font = CherryTheme.Body;
+        AllowDrop = true;
+        DoubleBuffered = true;
         var ic = AppEnv.LoadAppIcon();
         if (ic != null) Icon = ic;
-        AllowDrop = true;
 
-        _history = new TextBox
+        // â”€â”€ Header rosa (titulo + fechar), arrastavel â”€â”€
+        var header = new Panel { Location = new Point(0, 0), Size = new Size(ClientSize.Width, 42), BackColor = CherryTheme.Pink };
+        var title = new Label
         {
-            Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical,
-            Location = new Point(10, 10), Size = new Size(400, 328),
+            Text = "Chat",
+            Location = new Point(16, 0),
+            Size = new Size(240, 42),
+            Font = CherryTheme.HeadBig,
+            ForeColor = CherryTheme.Text,
+            TextAlign = ContentAlignment.MiddleLeft,
+            BackColor = Color.Transparent,
+        };
+        var btnClose = new IconButton { IconName = "close", Size = new Size(30, 30), Location = new Point(ClientSize.Width - 38, 6) };
+        btnClose.Click += (_, _) => Hide();
+        header.Controls.Add(title);
+        header.Controls.Add(btnClose);
+        header.MouseDown += OnDragStart; header.MouseMove += OnDragMove; header.MouseUp += OnDragEnd;
+        title.MouseDown += OnDragStart; title.MouseMove += OnDragMove; title.MouseUp += OnDragEnd;
+        Controls.Add(header);
+
+        // â”€â”€ Historico (links clicaveis) â”€â”€
+        _history = new RichTextBox
+        {
+            ReadOnly = true,
+            DetectUrls = true,
+            BorderStyle = BorderStyle.None,
+            Location = new Point(12, 50),
+            Size = new Size(376, 300),
             Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right,
             BackColor = Color.White,
+            ForeColor = CherryTheme.Text,
+            Font = CherryTheme.Body,
         };
+        _history.LinkClicked += (_, e) => OpenUrl(e.LinkText);
         Controls.Add(_history);
 
+        // â”€â”€ Painel de transferencia â”€â”€
         _transferPanel = new Panel
         {
-            Location = new Point(10, 346), Size = new Size(400, 54),
+            Location = new Point(12, 356), Size = new Size(376, 48),
             Anchor = AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right,
-            Visible = false, BorderStyle = BorderStyle.FixedSingle,
+            Visible = false, BackColor = CherryTheme.Soft, BorderStyle = BorderStyle.FixedSingle,
         };
-        _lblTransfer = new Label { Location = new Point(6, 4), Size = new Size(300, 18), Font = new Font("Segoe UI", 8f) };
-        _pbTransfer = new ProgressBar { Location = new Point(6, 26), Size = new Size(308, 18), Minimum = 0, Maximum = 100 };
-        var btnCancel = new Button { Location = new Point(320, 24), Size = new Size(74, 22), Text = "Cancelar", Font = new Font("Segoe UI", 7.5f) };
+        _lblTransfer = new Label { Location = new Point(8, 4), Size = new Size(280, 16), Font = CherryTheme.BodySmall, ForeColor = CherryTheme.Text, BackColor = Color.Transparent };
+        _pbTransfer = new ProgressBar { Location = new Point(8, 24), Size = new Size(288, 16), Minimum = 0, Maximum = 100 };
+        var btnCancel = new Button { Location = new Point(302, 22), Size = new Size(66, 20), Text = "Cancelar", Font = CherryTheme.BodySmall, FlatStyle = FlatStyle.Flat };
         btnCancel.Click += (_, _) => CancelTransfer?.Invoke();
-        _btnOpenFolder = new Button { Location = new Point(310, 2), Size = new Size(84, 20), Text = "Abrir pasta", Font = new Font("Segoe UI", 7.5f), Visible = false };
+        _btnOpenFolder = new Button { Location = new Point(288, 2), Size = new Size(80, 18), Text = "Abrir pasta", Font = CherryTheme.BodySmall, FlatStyle = FlatStyle.Flat, Visible = false };
         _btnOpenFolder.Click += (_, _) => OpenFolder();
         _transferPanel.Controls.AddRange(new Control[] { _lblTransfer, _pbTransfer, btnCancel, _btnOpenFolder });
         Controls.Add(_transferPanel);
 
+        // â”€â”€ Linha de entrada: campo + Enviar + Arquivo â”€â”€
         _input = new TextBox
         {
-            Location = new Point(10, 410), Size = new Size(246, 24),
+            Location = new Point(12, 412), Size = new Size(236, 28),
             Anchor = AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right,
+            BorderStyle = BorderStyle.FixedSingle, BackColor = Color.White, ForeColor = CherryTheme.Text,
+            Font = CherryTheme.Body,
         };
         _input.KeyDown += (_, e) =>
         {
@@ -76,11 +115,11 @@ public sealed class ChatWindow : Form
         };
         Controls.Add(_input);
 
-        var btnSend = new Button { Location = new Point(262, 408), Size = new Size(70, 27), Text = "Enviar", Anchor = AnchorStyles.Bottom | AnchorStyles.Right };
+        var btnSend = new PillButton { Text = "Enviar", IconName = "send", Location = new Point(254, 410), Size = new Size(84, 32), Anchor = AnchorStyles.Bottom | AnchorStyles.Right, FillColor = CherryTheme.Pink };
         btnSend.Click += (_, _) => DoSend();
         Controls.Add(btnSend);
 
-        var btnFile = new Button { Location = new Point(338, 408), Size = new Size(72, 27), Text = "Arquivo", Anchor = AnchorStyles.Bottom | AnchorStyles.Right };
+        var btnFile = new IconButton { IconName = "upload", Location = new Point(344, 408), Size = new Size(44, 36), Anchor = AnchorStyles.Bottom | AnchorStyles.Right };
         btnFile.Click += (_, _) => PickFile();
         Controls.Add(btnFile);
 
@@ -97,9 +136,28 @@ public sealed class ChatWindow : Form
         {
             if (!_forceClose && e.CloseReason == CloseReason.UserClosing) { e.Cancel = true; Hide(); }
         };
+        Load += (_, _) => ApplyRegion();
+        Resize += (_, _) => ApplyRegion();
 
         LoadHistory();
     }
+
+    private void ApplyRegion()
+    {
+        try { Region = GfxExt.RoundedRegion(Size, 14); } catch { }
+    }
+
+    // â”€â”€ Arraste pelo header â”€â”€
+    private void OnDragStart(object? s, MouseEventArgs e)
+    {
+        if (e.Button == MouseButtons.Left) { _dragging = true; _dragOff = e.Location; }
+    }
+    private void OnDragMove(object? s, MouseEventArgs e)
+    {
+        // e.Location e relativo ao controle do header; soma a origem do header (0,0).
+        if (_dragging) Location = new Point(Location.X + e.X - _dragOff.X, Location.Y + e.Y - _dragOff.Y);
+    }
+    private void OnDragEnd(object? s, MouseEventArgs e) => _dragging = false;
 
     public void ForceClose()
     {
@@ -107,9 +165,9 @@ public sealed class ChatWindow : Form
         try { Close(); } catch { }
     }
 
-    public void AddIncoming(string from, string text) => AppendLine($"[{DateTime.Now:HH:mm}] {from}: {text}", true);
+    public void AddIncoming(string from, string text) => Append($"[{DateTime.Now:HH:mm}] {from}: {text}", CherryTheme.Text, true);
 
-    public void AddSystem(string text) => AppendLine($"[{DateTime.Now:HH:mm}] * {text}", true);
+    public void AddSystem(string text) => Append($"[{DateTime.Now:HH:mm}] * {text}", CherryTheme.Muted, true);
 
     public void SetTransfer(string text, int pct, bool visible)
     {
@@ -134,6 +192,13 @@ public sealed class ChatWindow : Form
         catch (Exception ex) { Log.Write("abrir pasta falhou: " + ex.Message); }
     }
 
+    private static void OpenUrl(string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url)) return;
+        try { Process.Start(new ProcessStartInfo(url) { UseShellExecute = true }); }
+        catch (Exception ex) { Log.Write("abrir link falhou: " + ex.Message); }
+    }
+
     private async void DoSend()
     {
         string text = _input.Text.Trim();
@@ -141,7 +206,7 @@ public sealed class ChatWindow : Form
         _input.Clear();
         bool ok = false;
         try { ok = await _sendChat(text); } catch { }
-        AppendLine($"[{DateTime.Now:HH:mm}] Eu: {text}{(ok ? "" : "  (nao entregue - sem conexao)")}", true);
+        Append($"[{DateTime.Now:HH:mm}] Eu: {text}{(ok ? "" : "  (nao entregue - sem conexao)")}", CherryTheme.PinkDeep, true);
     }
 
     private void PickFile()
@@ -150,9 +215,20 @@ public sealed class ChatWindow : Form
         if (dlg.ShowDialog(this) == DialogResult.OK) _sendFile(dlg.FileName);
     }
 
-    private void AppendLine(string line, bool persist)
+    // Acrescenta uma linha (cor opcional) e rola pro fim. Links sao auto-detectados.
+    private void Append(string line, Color color, bool persist)
     {
-        try { _history.AppendText(line + Environment.NewLine); } catch { }
+        try
+        {
+            _history.SelectionStart = _history.TextLength;
+            _history.SelectionLength = 0;
+            _history.SelectionColor = color;
+            _history.AppendText(line + Environment.NewLine);
+            _history.SelectionColor = _history.ForeColor;
+            _history.SelectionStart = _history.TextLength;
+            _history.ScrollToCaret();
+        }
+        catch { }
         if (!persist) return;
         try { File.AppendAllText(_historyPath, line + Environment.NewLine); } catch { }
     }
@@ -165,7 +241,7 @@ public sealed class ChatWindow : Form
             string[] lines = File.ReadAllLines(_historyPath);
             int start = Math.Max(0, lines.Length - 200);
             for (int i = start; i < lines.Length; i++)
-                _history.AppendText(lines[i] + Environment.NewLine);
+                Append(lines[i], CherryTheme.Muted, false);
         }
         catch (Exception ex) { Log.Write("chat: historico nao carregou: " + ex.Message); }
     }

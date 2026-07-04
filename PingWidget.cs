@@ -123,10 +123,12 @@ public sealed class PingWidget : Form
         _flashTimer.Start();
     }
 
+    private static readonly Color Cherry = Color.FromArgb(0xD6, 0x28, 0x42); // vermelho cereja
+
     private void OnFlashTick(object? sender, EventArgs e)
     {
         _flashStep++;
-        if (_flashStep > 50) // 50 * 40ms = 2s
+        if (_flashStep > 55) // 55 * 40ms = ~2.2s
         {
             _flashTimer.Stop();
             _flashStep = -1;
@@ -134,9 +136,58 @@ public sealed class PingWidget : Form
             Invalidate();
             return;
         }
-        double k = Math.Abs(Math.Sin(_flashStep * Math.PI / 10.0)); // ~5 pulsos em 2s
-        BackColor = Blend(_baseBack, Color.FromArgb(235, 120, 20), k);
+        double k = Math.Abs(Math.Sin(_flashStep * Math.PI / 10.0)) * 0.85; // pulso rosa/cereja
+        BackColor = Blend(_baseBack, Cherry, k);
         Invalidate();
+    }
+
+    // Easing de "quicada" (bounce) p/ a cerejinha cair e assentar.
+    private static double EaseOutBounce(double x)
+    {
+        const double n1 = 7.5625, d1 = 2.75;
+        if (x < 1 / d1) return n1 * x * x;
+        if (x < 2 / d1) { x -= 1.5 / d1; return n1 * x * x + 0.75; }
+        if (x < 2.5 / d1) { x -= 2.25 / d1; return n1 * x * x + 0.9375; }
+        x -= 2.625 / d1; return n1 * x * x + 0.984375;
+    }
+
+    // Desenha uma cerejinha (2 frutinhas + cabinho + folha) com escala e alpha.
+    private static void DrawCherry(Graphics g, float cx, float baseCy, float scale, int alpha)
+    {
+        alpha = Math.Clamp(alpha, 0, 255);
+        Color cherry = Color.FromArgb(alpha, 0xD6, 0x28, 0x42);
+        Color stem = Color.FromArgb(alpha, 0x86, 0xA5, 0x4A);
+        Color leaf = Color.FromArgb(alpha, 0x5F, 0xB0, 0x5F);
+        Color shine = Color.FromArgb(Math.Min(alpha, 200), 0xFF, 0xEB, 0xF0);
+
+        float r = 5.2f * scale;
+        PointF lb = new(cx - r * 0.85f, baseCy);
+        PointF rb = new(cx + r * 0.95f, baseCy + r * 0.18f);
+        PointF joint = new(cx + r * 0.25f, baseCy - 13f * scale);
+
+        using (var pen = new Pen(stem, Math.Max(1.3f, 1.7f * scale)) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+        {
+            g.DrawBezier(pen, lb.X, lb.Y - r * 0.6f, cx - r, joint.Y + 4 * scale, cx - scale, joint.Y + 2 * scale, joint.X, joint.Y);
+            g.DrawBezier(pen, rb.X, rb.Y - r * 0.6f, cx + r * 1.6f, joint.Y + 5 * scale, cx + r * 0.6f, joint.Y + 2 * scale, joint.X, joint.Y);
+        }
+        using (var lf = new SolidBrush(leaf))
+        {
+            var st = g.Save();
+            g.TranslateTransform(joint.X, joint.Y);
+            g.RotateTransform(-35);
+            g.FillEllipse(lf, 0, -3.2f * scale, 9f * scale, 5f * scale);
+            g.Restore(st);
+        }
+        using (var b = new SolidBrush(cherry))
+        {
+            g.FillEllipse(b, lb.X - r, lb.Y - r, r * 2, r * 2);
+            g.FillEllipse(b, rb.X - r, rb.Y - r, r * 2, r * 2);
+        }
+        using (var s = new SolidBrush(shine))
+        {
+            g.FillEllipse(s, lb.X - r * 0.55f, lb.Y - r * 0.65f, r * 0.7f, r * 0.7f);
+            g.FillEllipse(s, rb.X - r * 0.55f, rb.Y - r * 0.65f, r * 0.7f, r * 0.7f);
+        }
     }
 
     private static Color Blend(Color a, Color b, double k) => Color.FromArgb(
@@ -149,7 +200,9 @@ public sealed class PingWidget : Form
         base.OnPaint(e);
         var g = e.Graphics;
         g.SmoothingMode = SmoothingMode.AntiAlias;
-        using (var br = new SolidBrush(_dot)) g.FillEllipse(br, 10, 12, 10, 10);
+        // Durante o ping, a cerejinha animada ocupa a esquerda no lugar da bolinha.
+        if (_flashStep < 0)
+            using (var br = new SolidBrush(_dot)) g.FillEllipse(br, 10, 12, 10, 10);
         if (_updateBadge)
         {
             using var bg = new SolidBrush(Color.Gold);
@@ -163,6 +216,17 @@ public sealed class PingWidget : Form
         string sub = _updateBadge ? "atualizacao disponivel"
             : _lastPing != DateTime.MinValue ? $"ping {_lastPing:HH:mm}" : "";
         g.DrawString(sub, f2, gray, new RectangleF(26, 28, 76, 16));
+
+        // Cerejinha do ping: cai com quicada, pulsa e some no fim.
+        if (_flashStep >= 0)
+        {
+            int step = _flashStep;
+            double p = Math.Min(1.0, step / 16.0);
+            float cy = (float)(8f + (30f - 8f) * EaseOutBounce(p));
+            float scale = step > 16 ? 1f + 0.10f * (float)Math.Sin((step - 16) * 0.45) : 1f;
+            int alpha = step > 46 ? Math.Max(0, (int)(255 * (55 - step) / 9.0)) : 255;
+            DrawCherry(g, 15f, cy, scale, alpha);
+        }
     }
 
     private Button MakeBtn(string text, Point loc)

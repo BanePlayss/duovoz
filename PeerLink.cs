@@ -11,7 +11,7 @@ namespace DuoVoz;
 
 /// <summary>
 /// Canal de controle TCP (porta 50780): frames [u32 LE length][JSON UTF-8].
-/// Tipos: hello, chatText, ping, fileOffer, fileAccept, fileReject, fileCancel, bye.
+/// Tipos: hello, chatText, ping, media, fileOffer, fileAccept, fileReject, fileCancel, bye.
 /// Ambos os lados escutam; quem tem alvo disca (retry ~10s enquanto desconectado â€”
 /// funciona mesmo sem broadcast, ex.: amigo salvo em outra subrede/tailnet futura).
 ///
@@ -55,6 +55,7 @@ public sealed class PeerLink : IDisposable
     public event Action? LinkDown;
     public event Action<string, DateTime>? ChatReceived;
     public event Action? PingReceived;
+    public event Action<MediaAction>? MediaReceived;             // controle remoto de musica
     public event Action<Guid, string, long>? FileOfferReceived;  // (tid, nome, tamanho)
     public event Action<Guid>? FileAcceptReceived;
     public event Action<Guid, string>? FileRejectReceived;       // (tid, motivo)
@@ -105,6 +106,7 @@ public sealed class PeerLink : IDisposable
     // ----- envio -----
     public Task<bool> SendChatAsync(string text) => SendAsync(new { t = "chatText", text });
     public Task<bool> SendPingAsync() => SendAsync(new { t = "ping" });
+    public Task<bool> SendMediaAsync(MediaAction a) => SendAsync(new { t = "media", action = MediaStr(a) });
     public Task<bool> SendFileOfferAsync(Guid tid, string name, long size)
         => SendAsync(new { t = "fileOffer", tid = tid.ToString("N"), name, size });
     public Task<bool> SendFileAcceptAsync(Guid tid) => SendAsync(new { t = "fileAccept", tid = tid.ToString("N") });
@@ -275,6 +277,10 @@ public sealed class PeerLink : IDisposable
                     case "ping":
                         PingReceived?.Invoke();
                         break;
+                    case "media":
+                        MediaReceived?.Invoke(ParseMedia(
+                            r.TryGetProperty("action", out var mp) ? mp.GetString() ?? "" : ""));
+                        break;
                     case "fileOffer":
                         FileOfferReceived?.Invoke(Tid(r), r.GetProperty("name").GetString() ?? "arquivo",
                             r.GetProperty("size").GetInt64());
@@ -303,6 +309,20 @@ public sealed class PeerLink : IDisposable
     }
 
     private static Guid Tid(JsonElement r) => Guid.ParseExact(r.GetProperty("tid").GetString() ?? "", "N");
+
+    private static string MediaStr(MediaAction a) => a switch
+    {
+        MediaAction.Next => "next",
+        MediaAction.Prev => "prev",
+        _ => "playpause",
+    };
+
+    private static MediaAction ParseMedia(string s) => s switch
+    {
+        "next" => MediaAction.Next,
+        "prev" => MediaAction.Prev,
+        _ => MediaAction.PlayPause,
+    };
 
     private static async Task WriteMsgAsync(Link link, object msg, CancellationToken ct)
     {

@@ -154,6 +154,25 @@ internal static class CherryIcons
                 g.DrawLine(pen, P(24, 24), P(76, 76));
                 g.DrawLine(pen, P(76, 24), P(24, 76));
                 break;
+            case "skipNext":
+                g.FillPolygon(fill, new[] { P(26, 28), P(26, 72), P(58, 50) });
+                g.DrawLine(pen, P(70, 26), P(70, 74));
+                break;
+            case "skipPrev":
+                g.FillPolygon(fill, new[] { P(74, 28), P(74, 72), P(42, 50) });
+                g.DrawLine(pen, P(30, 26), P(30, 74));
+                break;
+            case "playPause":
+                // triangulo de play (representa play/pausa)
+                g.FillPolygon(fill, new[] { P(34, 26), P(34, 74), P(76, 50) });
+                break;
+            case "send":
+                // aviaozinho de papel
+                g.DrawLine(pen, P(14, 52), P(86, 16));
+                g.DrawLine(pen, P(86, 16), P(58, 86));
+                g.DrawLine(pen, P(58, 86), P(46, 56));
+                g.DrawLine(pen, P(46, 56), P(14, 52));
+                break;
         }
         g.SmoothingMode = oldSmooth;
     }
