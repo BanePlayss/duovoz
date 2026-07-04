@@ -263,6 +263,12 @@ public sealed partial class MainForm : Form
     private bool _closing;          // FormClosing ja iniciado
     private bool _readyToClose;     // teardown concluido -> pode fechar de verdade
 
+    // â”€â”€â”€ Bandeja do sistema â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // Fechar no X apenas esconde na bandeja; so sai de verdade pelo menu "Sair".
+    private NotifyIcon? _tray;
+    private bool _forceQuit;        // true => fechar de verdade (menu Sair / shutdown)
+    private bool _trayHintShown;    // balao "continua rodando" ja exibido 1x
+
     // â”€â”€â”€ Volume ao vivo (mixer) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // Mantidos como campos p/ ajustar o volume enquanto o audio toca (write de float
     // e atomico; alterar .Volume da UI thread durante o playback e seguro).
@@ -552,6 +558,60 @@ public sealed partial class MainForm : Form
         FormClosing += OnFormClosing;
         Resize += (_, _) => { if (WindowState == FormWindowState.Normal) ApplyRoundedRegion(); };
         Load += (_, _) => ApplyRoundedRegion();
+
+        SetupTray();
+    }
+
+    // â”€â”€â”€ BANDEJA DO SISTEMA â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // Icone na bandeja + menu (Abrir / Sair). Fechar no X esconde aqui em vez de sair.
+    private void SetupTray()
+    {
+        var menu = new ContextMenuStrip();
+        var miOpen = new ToolStripMenuItem("Abrir");
+        miOpen.Font = new Font(miOpen.Font, FontStyle.Bold); // acao padrao (double-click)
+        miOpen.Click += (_, _) => RestoreFromTray();
+        var miQuit = new ToolStripMenuItem("Sair");
+        miQuit.Click += (_, _) => { _forceQuit = true; Close(); };
+        menu.Items.Add(miOpen);
+        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add(miQuit);
+
+        _tray = new NotifyIcon
+        {
+            Text = "CherrySpy",
+            Icon = AppEnv.LoadAppIcon() ?? Icon ?? SystemIcons.Application,
+            Visible = true,
+            ContextMenuStrip = menu,
+        };
+        _tray.DoubleClick += (_, _) => RestoreFromTray();
+    }
+
+    // Esconde a janela na bandeja (chamado ao fechar no X).
+    private void HideToTray()
+    {
+        Hide();
+        ShowInTaskbar = false;
+        if (!_trayHintShown && _tray != null)
+        {
+            _trayHintShown = true;
+            try
+            {
+                _tray.ShowBalloonTip(3000, "CherrySpy",
+                    "Continua rodando aqui. Clique p/ abrir; botao direito p/ Sair.",
+                    ToolTipIcon.Info);
+            }
+            catch { }
+        }
+    }
+
+    // Traz a janela de volta da bandeja.
+    private void RestoreFromTray()
+    {
+        Show();
+        ShowInTaskbar = true;
+        WindowState = FormWindowState.Normal;
+        Activate();
+        BringToFront();
     }
 
     // â”€â”€ Helpers de layout da nova UI â”€â”€
@@ -1513,6 +1573,15 @@ public sealed partial class MainForm : Form
         // Segundo Close() (apos o teardown concluir): deixa fechar de verdade.
         if (_readyToClose) return;
 
+        // Fechar pelo X / Alt+F4 apenas esconde na bandeja. Sair de verdade so pelo
+        // menu "Sair" (_forceQuit) ou shutdown/logoff do Windows (reason != UserClosing).
+        if (!_forceQuit && e.CloseReason == CloseReason.UserClosing)
+        {
+            e.Cancel = true;
+            HideToTray();
+            return;
+        }
+
         // Primeiro Close(): cancela, para o timer, faz o teardown OFF da UI thread e
         // so entao fecha. Isso evita o self-deadlock de StopRecording()/Stop()
         // marshalando o evento de parada de volta p/ a UI thread bloqueada no Stop.
@@ -1531,6 +1600,8 @@ public sealed partial class MainForm : Form
         }
         ShutdownPhase2(); // widget, chat, canal de controle, transferencias
         await TeardownAsync();
+
+        try { if (_tray != null) { _tray.Visible = false; _tray.Dispose(); _tray = null; } } catch { }
 
         _readyToClose = true;
         Close();
