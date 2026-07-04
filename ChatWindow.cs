@@ -2,7 +2,10 @@ using System;
 using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.Drawing.Imaging;
 using System.IO;
+using System.Runtime.InteropServices;
+using System.Text;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
@@ -46,6 +49,7 @@ public sealed class ChatWindow : Form
         Font = CherryTheme.Body;
         AllowDrop = true;
         DoubleBuffered = true;
+        KeyPreview = true; // p/ interceptar Ctrl+V (colar imagem) antes do campo de texto
         var ic = AppEnv.LoadAppIcon();
         if (ic != null) Icon = ic;
 
@@ -132,6 +136,18 @@ public sealed class ChatWindow : Form
             if (e.Data?.GetData(DataFormats.FileDrop) is string[] files && files.Length > 0) _sendFile(files[0]);
         };
 
+        // Colar (Ctrl+V): imagem do clipboard ou arquivos copiados viram envio.
+        // Texto normal cai pro campo (nao suprimido).
+        KeyDown += (_, e) =>
+        {
+            if (e.Control && e.KeyCode == Keys.V && (ClipboardHasImage() || ClipboardHasFiles()))
+            {
+                e.Handled = true;
+                e.SuppressKeyPress = true;
+                PasteFromClipboard();
+            }
+        };
+
         FormClosing += (_, e) =>
         {
             if (!_forceClose && e.CloseReason == CloseReason.UserClosing) { e.Cancel = true; Hide(); }
@@ -213,6 +229,123 @@ public sealed class ChatWindow : Form
     {
         using var dlg = new OpenFileDialog { Title = "Enviar arquivo" };
         if (dlg.ShowDialog(this) == DialogResult.OK) _sendFile(dlg.FileName);
+    }
+
+    private static bool ClipboardHasImage()
+    {
+        try { return Clipboard.ContainsImage(); } catch { return false; }
+    }
+
+    private static bool ClipboardHasFiles()
+    {
+        try { return Clipboard.ContainsFileDropList(); } catch { return false; }
+    }
+
+    // Colar do clipboard: imagem -> salva PNG temporario, mostra thumbnail e envia por
+    // transferencia de arquivo; arquivos copiados -> envia cada um.
+    private void PasteFromClipboard()
+    {
+        try
+        {
+            if (Clipboard.ContainsImage())
+            {
+                using Image? img = Clipboard.GetImage();
+                if (img == null) return;
+                string tmp = Path.Combine(Path.GetTempPath(), $"imagem_{DateTime.Now:yyyyMMdd_HHmmss_fff}.png");
+                img.Save(tmp, ImageFormat.Png);
+                Append($"[{DateTime.Now:HH:mm}] Eu enviei uma imagem:", CherryTheme.PinkDeep, true);
+                AppendImageInline(img);
+                _sendFile(tmp);
+            }
+            else if (Clipboard.ContainsFileDropList())
+            {
+                var files = Clipboard.GetFileDropList();
+                foreach (string? f in files)
+                    if (!string.IsNullOrEmpty(f) && File.Exists(f)) _sendFile(f);
+            }
+        }
+        catch (Exception ex) { Log.Write("chat: colar falhou: " + ex.Message); }
+    }
+
+    // Imagem recebida (arquivo de imagem que chegou): mostra o thumbnail no historico.
+    public void AddIncomingImage(string path)
+    {
+        try
+        {
+            using var img = Image.FromFile(path);
+            AppendImageInline(img);
+        }
+        catch (Exception ex) { Log.Write("chat: img recebida nao renderizou: " + ex.Message); }
+    }
+
+    // Insere um thumbnail (max ~240px de largura) inline no RichTextBox via RTF.
+    private void AppendImageInline(Image img)
+    {
+        try
+        {
+            const int maxW = 240;
+            double sc = img.Width > maxW ? (double)maxW / img.Width : 1.0;
+            int w = Math.Max(1, (int)(img.Width * sc));
+            int h = Math.Max(1, (int)(img.Height * sc));
+            using var thumb = new Bitmap(w, h);
+            using (var g = Graphics.FromImage(thumb))
+            {
+                g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                g.DrawImage(img, 0, 0, w, h);
+            }
+            string rtf = ImageToRtf(thumb);
+            _history.SelectionStart = _history.TextLength;
+            _history.SelectionLength = 0;
+            _history.SelectedRtf = rtf;
+            _history.AppendText(Environment.NewLine);
+            _history.SelectionStart = _history.TextLength;
+            _history.ScrollToCaret();
+        }
+        catch (Exception ex) { Log.Write("chat: thumb inline falhou: " + ex.Message); }
+    }
+
+    // Converte uma imagem em RTF (\wmetafile8) p/ inserir no RichTextBox. O RichEdit
+    // do WinForms nao aceita \pngblip; a via confiavel e desenhar num metafile EMF,
+    // converter p/ WMF (GdipEmfToWmfBits) e serializar em hex.
+    private const int MM_ANISOTROPIC = 8;
+
+    [DllImport("gdiplus.dll")]
+    private static extern uint GdipEmfToWmfBits(IntPtr hEmf, uint bufferSize, byte[]? buffer, int mappingMode, int flags);
+    [DllImport("gdi32.dll")]
+    private static extern int DeleteEnhMetaFile(IntPtr hemf);
+
+    private static string ImageToRtf(Image image)
+    {
+        Metafile mf;
+        using (var gRef = Graphics.FromHwnd(IntPtr.Zero))
+        {
+            IntPtr hdc = gRef.GetHdc();
+            try { mf = new Metafile(hdc, EmfType.EmfOnly); }
+            finally { gRef.ReleaseHdc(hdc); }
+        }
+        using (var gMf = Graphics.FromImage(mf))
+            gMf.DrawImage(image, 0, 0, image.Width, image.Height);
+
+        IntPtr hEmf = mf.GetHenhmetafile();
+        byte[] buffer;
+        try
+        {
+            uint size = GdipEmfToWmfBits(hEmf, 0, null, MM_ANISOTROPIC, 0);
+            buffer = new byte[size];
+            GdipEmfToWmfBits(hEmf, size, buffer, MM_ANISOTROPIC, 0);
+        }
+        finally { DeleteEnhMetaFile(hEmf); mf.Dispose(); }
+
+        int hmW = (int)Math.Round(image.Width * 2540.0 / 96.0);  // himetric (0.01mm)
+        int hmH = (int)Math.Round(image.Height * 2540.0 / 96.0);
+        int goalW = (int)Math.Round(image.Width * 1440.0 / 96.0); // twips
+        int goalH = (int)Math.Round(image.Height * 1440.0 / 96.0);
+        var sb = new StringBuilder(buffer.Length * 2 + 160);
+        sb.Append(@"{\rtf1\ansi{\pict\wmetafile8\picw").Append(hmW).Append(@"\pich").Append(hmH)
+          .Append(@"\picwgoal").Append(goalW).Append(@"\pichgoal").Append(goalH).Append(' ');
+        foreach (byte b in buffer) sb.Append(b.ToString("x2"));
+        sb.Append(@"}}");
+        return sb.ToString();
     }
 
     // Acrescenta uma linha (cor opcional) e rola pro fim. Links sao auto-detectados.

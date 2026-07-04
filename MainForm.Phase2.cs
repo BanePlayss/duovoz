@@ -383,7 +383,17 @@ public sealed partial class MainForm
         EnsureChat();
         _chat!.SetTransfer("", 0, false);
         _chat.AddSystem(msg);
-        if (ok && savedPath.Length > 0) _chat.ShowOpenFolder(savedPath);
+        if (ok && savedPath.Length > 0)
+        {
+            _chat.ShowOpenFolder(savedPath);
+            if (IsImagePath(savedPath)) _chat.AddIncomingImage(savedPath); // mostra o thumbnail inline
+        }
+    }
+
+    private static bool IsImagePath(string p)
+    {
+        string e = System.IO.Path.GetExtension(p).ToLowerInvariant();
+        return e is ".png" or ".jpg" or ".jpeg" or ".gif" or ".bmp";
     }
 
     private string DisplayPeerName()
