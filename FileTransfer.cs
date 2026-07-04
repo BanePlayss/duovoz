@@ -169,7 +169,7 @@ public sealed class FileTransferService : IDisposable
         var sw = Stopwatch.StartNew(); long lastMs = -1000, lastBytes = 0;
         try
         {
-            string dest = UniquePath(Path.Combine(AppEnv.DownloadsDir, SanitizeName(name)));
+            string dest = UniquePath(Path.Combine(AppEnv.MediaDir, SanitizeName(name)));
             a.Path = dest;
             try
             {

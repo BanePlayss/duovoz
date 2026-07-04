@@ -364,29 +364,34 @@ public sealed partial class MainForm
 
     private void OnFileOffer(Guid tid, string name, long size)
     {
-        var res = MessageBox.Show(this,
-            $"{DisplayPeerName()} quer te enviar um arquivo:\n\n{name}\nTamanho: {AppEnv.FormatBytes(size)}\n\nAceitar e salvar em Downloads\\DuoVoz?",
-            "CherrySpy - Receber arquivo", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
-        if (res == DialogResult.Yes)
+        // Aceite automatico, sem popup: a imagem/arquivo cai direto na conversa. Nao
+        // rouba foco â€” so avisa no chat e marca nao-lida no widget se ele estiver fechado.
+        EnsureChat();
+        _chat!.AddSystem($"Recebendo {name} ({AppEnv.FormatBytes(size)})...");
+        if (!_chat.Visible)
         {
-            OpenChat();
-            _fileTransfer?.AcceptOffer(tid, name, size);
+            _unread++;
+            _widget?.SetUnread(_unread);
+            if (_config.ShowWidget) _widget?.ShowNoActivate();
         }
-        else
-        {
-            _fileTransfer?.RejectOffer(tid);
-        }
+        _fileTransfer?.AcceptOffer(tid, name, size);
     }
 
     private void OnTransferDone(string msg, bool ok, string savedPath)
     {
         EnsureChat();
         _chat!.SetTransfer("", 0, false);
+        // Imagem recebida: fica APENAS na conversa (thumbnail inline), sem a linha do
+        // caminho nem "Abrir pasta". Ela ainda e salva na pasta Recebidos do app.
+        if (ok && savedPath.Length > 0 && IsImagePath(savedPath))
+        {
+            _chat.AddIncomingImage(savedPath);
+            return;
+        }
         _chat.AddSystem(msg);
         if (ok && savedPath.Length > 0)
         {
             _chat.ShowOpenFolder(savedPath);
-            if (IsImagePath(savedPath)) _chat.AddIncomingImage(savedPath); // mostra o thumbnail inline
         }
     }
 

@@ -22,12 +22,13 @@ public static class AppEnv
         }
     }
 
-    /// <summary>%USERPROFILE%\Downloads\DuoVoz (destino de arquivos recebidos).</summary>
-    public static string DownloadsDir
+    /// <summary>%APPDATA%\DuoVoz\Recebidos (destino de imagens/arquivos recebidos; na
+    /// propria pasta do app, sobrevive a updates do Velopack).</summary>
+    public static string MediaDir
     {
         get
         {
-            string d = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads", "DuoVoz");
+            string d = Path.Combine(DataDir, "Recebidos");
             try { Directory.CreateDirectory(d); } catch { }
             return d;
         }
