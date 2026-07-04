@@ -354,9 +354,9 @@ public sealed partial class MainForm : Form
         _header.MouseDown += Header_MouseDown; // arraste via WM_NCLBUTTONDOWN/HTCAPTION
         Controls.Add(_header);
         // Botoes minimizar/fechar (pintados) no canto direito do header.
-        var btnClose = new IconButton { IconName = "close", Size = new Size(30, 30), Location = new Point(ClientSize.Width - 38, 11) };
+        var btnClose = new IconButton { IconName = "close", Size = new Size(38, 38), IconSize = 18, Location = new Point(ClientSize.Width - 46, 7) };
         btnClose.Click += (_, _) => Close();          // dispara o FormClosing/teardown existente
-        var btnMin = new IconButton { IconName = "minimize", Size = new Size(30, 30), Location = new Point(ClientSize.Width - 72, 11) };
+        var btnMin = new IconButton { IconName = "minimize", Size = new Size(38, 38), IconSize = 18, Location = new Point(ClientSize.Width - 88, 7) };
         btnMin.Click += (_, _) => WindowState = FormWindowState.Minimized;
         _header.Controls.Add(btnClose);
         _header.Controls.Add(btnMin);
@@ -501,6 +501,9 @@ public sealed partial class MainForm : Form
 
         // Controle remoto da musica do par (Spotify etc): prev / play-pause / next.
         AddMediaRow(padX, contentW, ref y);
+
+        // "Tocando agora": a musica que estamos ouvindo (local ou a do par quando ele e o DJ).
+        AddNowPlayingRow(padX, contentW, ref y);
 
         _chkPtt = AddToggleRow("mic", "Falar apertando (push-to-talk)", "segura Espaco pra falar (janela em foco)", padX, ref y);
         _chkPtt.CheckedChanged += (_, _) =>

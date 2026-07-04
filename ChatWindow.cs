@@ -65,7 +65,7 @@ public sealed class ChatWindow : Form
             TextAlign = ContentAlignment.MiddleLeft,
             BackColor = Color.Transparent,
         };
-        var btnClose = new IconButton { IconName = "close", Size = new Size(30, 30), Location = new Point(ClientSize.Width - 38, 6) };
+        var btnClose = new IconButton { IconName = "close", Size = new Size(36, 36), IconSize = 18, Location = new Point(ClientSize.Width - 44, 3) };
         btnClose.Click += (_, _) => Hide();
         header.Controls.Add(title);
         header.Controls.Add(btnClose);

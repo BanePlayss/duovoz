@@ -419,6 +419,10 @@ internal sealed class IconButton : Control
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     public string Caption { get; set; } = "";
 
+    // Tamanho fixo do icone em px; 0 = automatico (min(W,H)-22 sem caption, 24 com caption).
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public int IconSize { get; set; }
+
     public IconButton()
     {
         SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint
@@ -460,7 +464,7 @@ internal sealed class IconButton : Control
         }
 
         Color ic = Enabled ? CherryTheme.Text : CherryTheme.Dim;
-        int iconSize = string.IsNullOrEmpty(Caption) ? Math.Min(Width, Height) - 22 : 24;
+        int iconSize = IconSize > 0 ? IconSize : (string.IsNullOrEmpty(Caption) ? Math.Min(Width, Height) - 22 : 24);
         int iconY = string.IsNullOrEmpty(Caption) ? (Height - iconSize) / 2 : 6;
         var ir = new Rectangle((Width - iconSize) / 2, iconY, iconSize, iconSize);
         CherryIcons.Draw(g, IconName, ir, ic);

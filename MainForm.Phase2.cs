@@ -30,6 +30,12 @@ public sealed partial class MainForm
     private IconButton _btnMediaPlay = null!;
     private IconButton _btnMediaNext = null!;
     private MediaKeyHook? _mediaHook;
+    private Panel _npRow = null!;                 // "tocando agora"
+    private string _nowPlayingText = "";
+    private System.Windows.Forms.Timer? _npTimer;
+    private TrackInfo _peerTrack;                 // faixa que o par mandou (quando ele e o DJ)
+    private long _peerTrackTicks;
+    private string _lastSentNp = "";
     private int _unread;
     private long _lastPingSent;
     private bool _initializingPhase2; // suprime a escrita de config nos handlers durante o init
@@ -143,6 +149,70 @@ public sealed partial class MainForm
         y += bh + 10;
     }
 
+    // Linha "tocando agora" (musica que estamos ouvindo): icone + titulo/artista.
+    private void AddNowPlayingRow(int padX, int contentW, ref int y)
+    {
+        _npRow = new Panel { Location = new Point(padX, y), Size = new Size(contentW, 22), BackColor = CherryTheme.Panel };
+        _npRow.Paint += PaintNowPlaying;
+        Controls.Add(_npRow);
+        y += 26;
+    }
+
+    private void PaintNowPlaying(object? sender, PaintEventArgs e)
+    {
+        var g = e.Graphics;
+        if (string.IsNullOrEmpty(_nowPlayingText))
+        {
+            TextRenderer.DrawText(g, "Nada tocando", CherryTheme.BodySmall,
+                new Rectangle(0, 0, _npRow.Width, _npRow.Height), CherryTheme.Dim,
+                TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
+            return;
+        }
+        var iconR = new Rectangle(0, (_npRow.Height - 16) / 2, 16, 16);
+        CherryIcons.Draw(g, "music", iconR, CherryTheme.PinkDeep);
+        TextRenderer.DrawText(g, _nowPlayingText, CherryTheme.Body,
+            new Rectangle(22, 0, _npRow.Width - 22, _npRow.Height), CherryTheme.Text,
+            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+    }
+
+    // Le a faixa local (SMTC), envia ao par se eu for o DJ, e mostra a faixa que estamos
+    // ouvindo (a do par quando recebo a musica dele; senao a minha).
+    private async Task UpdateNowPlaying()
+    {
+        try
+        {
+            TrackInfo local;
+            try { local = await NowPlaying.GetAsync(); }
+            catch { local = default; }
+            if (IsDisposed || _npRow == null || _npRow.IsDisposed) return;
+
+            var pl = _peerLink;
+            if (pl != null && pl.IsConnected && (_chkShareMusic?.Checked ?? false))
+            {
+                string key = $"{local.Title}{local.Artist}{local.Playing}";
+                if (key != _lastSentNp)
+                {
+                    _lastSentNp = key;
+                    _ = pl.SendNowPlayingAsync(local.Title, local.Artist, local.Playing);
+                }
+            }
+            else _lastSentNp = "";
+
+            double recvAge = (DateTime.UtcNow.Ticks - Interlocked.Read(ref _lastMusicRecvTicks)) / (double)TimeSpan.TicksPerSecond;
+            double peerAge = (DateTime.UtcNow.Ticks - _peerTrackTicks) / (double)TimeSpan.TicksPerSecond;
+            bool showPeer = recvAge < 3.0 && _peerTrack.HasTrack && peerAge < 20.0;
+            TrackInfo show = showPeer ? _peerTrack : local;
+
+            string text = show.HasTrack ? show.Display : "";
+            if (text != _nowPlayingText)
+            {
+                _nowPlayingText = text;
+                _npRow.Invalidate();
+            }
+        }
+        catch (Exception ex) { Log.Write("nowplaying tick: " + ex.Message); }
+    }
+
     // True => a tecla de midia foi ENCAMINHADA ao par (e suprimida aqui). So intercepta
     // quando estou OUVINDO a musica do par (recebendo StreamMusic ha < 2s) e NAO estou
     // compartilhando a minha — ai minha tecla controla o player DELE. Fora disso, deixa
@@ -194,6 +264,11 @@ public sealed partial class MainForm
         // Comando de midia do par: injeta a tecla de midia global aqui (controla meu player).
         // keybd_event e seguro fora da UI thread; nao precisa marshalar.
         _peerLink.MediaReceived += a => { try { MediaKeys.Send(a); } catch { } };
+        _peerLink.NowPlayingReceived += (title, artist, playing) => SafeBeginInvoke(() =>
+        {
+            _peerTrack = new TrackInfo(title, artist, playing);
+            _peerTrackTicks = DateTime.UtcNow.Ticks;
+        });
 
         _fileTransfer = new FileTransferService(_peerLink);
         _fileTransfer.OfferReceived += (tid, nm, sz) => SafeBeginInvoke(() => OnFileOffer(tid, nm, sz));
@@ -243,6 +318,11 @@ public sealed partial class MainForm
         try { _mediaHook = new MediaKeyHook { OnMediaKey = OnLocalMediaKey }; }
         catch (Exception ex) { Log.Write("media hook init falhou: " + ex.Message); }
 
+        // Poll da musica "tocando agora" (~2s).
+        _npTimer = new System.Windows.Forms.Timer { Interval = 2000 };
+        _npTimer.Tick += async (_, _) => await UpdateNowPlaying();
+        _npTimer.Start();
+
         Updater.AutoCheckLater(this, _btnUpdate, () => SafeBeginInvoke(() => _widget?.SetUpdateBadge(true)));
     }
 
@@ -251,6 +331,8 @@ public sealed partial class MainForm
     {
         try { _phase2Timer?.Stop(); } catch { }
         _phase2Timer = null;
+        try { _npTimer?.Stop(); } catch { }
+        _npTimer = null;
         try { _mediaHook?.Dispose(); } catch { }
         _mediaHook = null;
         try { _widget?.Close(); _widget?.Dispose(); } catch { }

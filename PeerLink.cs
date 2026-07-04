@@ -11,7 +11,7 @@ namespace DuoVoz;
 
 /// <summary>
 /// Canal de controle TCP (porta 50780): frames [u32 LE length][JSON UTF-8].
-/// Tipos: hello, chatText, ping, media, fileOffer, fileAccept, fileReject, fileCancel, bye.
+/// Tipos: hello, chatText, ping, media, nowplaying, fileOffer, fileAccept, fileReject, fileCancel, bye.
 /// Ambos os lados escutam; quem tem alvo disca (retry ~10s enquanto desconectado â€”
 /// funciona mesmo sem broadcast, ex.: amigo salvo em outra subrede/tailnet futura).
 ///
@@ -56,6 +56,7 @@ public sealed class PeerLink : IDisposable
     public event Action<string, DateTime>? ChatReceived;
     public event Action? PingReceived;
     public event Action<MediaAction>? MediaReceived;             // controle remoto de musica
+    public event Action<string, string, bool>? NowPlayingReceived; // (titulo, artista, tocando)
     public event Action<Guid, string, long>? FileOfferReceived;  // (tid, nome, tamanho)
     public event Action<Guid>? FileAcceptReceived;
     public event Action<Guid, string>? FileRejectReceived;       // (tid, motivo)
@@ -107,6 +108,8 @@ public sealed class PeerLink : IDisposable
     public Task<bool> SendChatAsync(string text) => SendAsync(new { t = "chatText", text });
     public Task<bool> SendPingAsync() => SendAsync(new { t = "ping" });
     public Task<bool> SendMediaAsync(MediaAction a) => SendAsync(new { t = "media", action = MediaStr(a) });
+    public Task<bool> SendNowPlayingAsync(string title, string artist, bool playing)
+        => SendAsync(new { t = "nowplaying", title, artist, playing });
     public Task<bool> SendFileOfferAsync(Guid tid, string name, long size)
         => SendAsync(new { t = "fileOffer", tid = tid.ToString("N"), name, size });
     public Task<bool> SendFileAcceptAsync(Guid tid) => SendAsync(new { t = "fileAccept", tid = tid.ToString("N") });
@@ -280,6 +283,12 @@ public sealed class PeerLink : IDisposable
                     case "media":
                         MediaReceived?.Invoke(ParseMedia(
                             r.TryGetProperty("action", out var mp) ? mp.GetString() ?? "" : ""));
+                        break;
+                    case "nowplaying":
+                        NowPlayingReceived?.Invoke(
+                            r.TryGetProperty("title", out var npt) ? npt.GetString() ?? "" : "",
+                            r.TryGetProperty("artist", out var npa) ? npa.GetString() ?? "" : "",
+                            r.TryGetProperty("playing", out var npp) && npp.ValueKind == JsonValueKind.True);
                         break;
                     case "fileOffer":
                         FileOfferReceived?.Invoke(Tid(r), r.GetProperty("name").GetString() ?? "arquivo",
