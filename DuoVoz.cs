@@ -670,14 +670,9 @@ public sealed partial class MainForm : Form
         g.SmoothingMode = SmoothingMode.AntiAlias;
         using (var br = new SolidBrush(CherryTheme.Panel)) g.FillRectangle(br, _header.ClientRectangle);
 
-        // Logo (icone do app) 26px.
-        var ic = Icon;
-        int logo = 26;
-        if (ic != null)
-        {
-            using var bmp = ic.ToBitmap();
-            g.DrawImage(bmp, new Rectangle(16, (HeaderH - logo) / 2, logo, logo));
-        }
+        // Logo: a cereja espia desenhada em vetor (crisp, combina com o widget).
+        int logo = 30;
+        SpyCherry.Draw(g, new RectangleF(15, (HeaderH - logo) / 2f, logo, logo));
         int tx = 16 + logo + 10;
         TextRenderer.DrawText(g, "CherrySpy", CherryTheme.HeadBig, new Rectangle(tx, 8, 200, 22),
             CherryTheme.Text, TextFormatFlags.Left);
