@@ -33,9 +33,10 @@ public sealed partial class MainForm
     private Panel _npRow = null!;                 // "tocando agora"
     private string _nowPlayingText = "";
     private System.Windows.Forms.Timer? _npTimer;
-    private TrackInfo _peerTrack;                 // faixa que o par mandou (quando ele e o DJ)
+    private TrackInfo _peerTrack;                 // faixa que o par mandou (o que ELE escuta)
     private long _peerTrackTicks;
     private string _lastSentNp = "";
+    private long _lastNpSentAt;
     private int _unread;
     private long _lastPingSent;
     private bool _initializingPhase2; // suprime a escrita de config nos handlers durante o init
@@ -187,21 +188,22 @@ public sealed partial class MainForm
             if (IsDisposed || _npRow == null || _npRow.IsDisposed) return;
 
             var pl = _peerLink;
-            if (pl != null && pl.IsConnected && (_chkShareMusic?.Checked ?? false))
+            if (pl != null && pl.IsConnected) // sempre envia MINHA faixa (ela mostra o que eu escuto)
             {
                 string key = $"{local.Title}{local.Artist}{local.Playing}";
-                if (key != _lastSentNp)
+                if (key != _lastSentNp || Environment.TickCount64 - _lastNpSentAt > 10000)
                 {
                     _lastSentNp = key;
+                    _lastNpSentAt = Environment.TickCount64;
                     _ = pl.SendNowPlayingAsync(local.Title, local.Artist, local.Playing);
                 }
             }
-            else _lastSentNp = "";
+            else { _lastSentNp = ""; _lastNpSentAt = 0; }
 
-            double recvAge = (DateTime.UtcNow.Ticks - Interlocked.Read(ref _lastMusicRecvTicks)) / (double)TimeSpan.TicksPerSecond;
+            // Exibicao usa SO a faixa do par (o que ELA escuta), nunca a minha.
             double peerAge = (DateTime.UtcNow.Ticks - _peerTrackTicks) / (double)TimeSpan.TicksPerSecond;
-            bool showPeer = recvAge < 3.0 && _peerTrack.HasTrack && peerAge < 20.0;
-            TrackInfo show = showPeer ? _peerTrack : local;
+            bool showPeer = (pl?.IsConnected ?? false) && _peerTrack.HasTrack && peerAge < 30.0;
+            TrackInfo show = showPeer ? _peerTrack : default;
 
             string text = show.HasTrack ? show.Display : "";
             if (text != _nowPlayingText)
@@ -258,7 +260,7 @@ public sealed partial class MainForm
         Guid linkId = _config.AllowLocalPeers ? _instanceId : _config.MachineId;
         _peerLink = new PeerLink(linkId, Environment.MachineName, _config.AllowLocalPeers);
         _peerLink.PeerHello += (id, name) => SafeBeginInvoke(() => OnPeerHello(id, name));
-        _peerLink.LinkDown += () => SafeBeginInvoke(UpdateWidget);
+        _peerLink.LinkDown += () => SafeBeginInvoke(() => { _peerTrack = default; UpdateWidget(); });
         _peerLink.ChatReceived += (text, _) => SafeBeginInvoke(() => OnChatReceived(text));
         _peerLink.PingReceived += () => SafeBeginInvoke(OnPingReceived);
         // Comando de midia do par: injeta a tecla de midia global aqui (controla meu player).
